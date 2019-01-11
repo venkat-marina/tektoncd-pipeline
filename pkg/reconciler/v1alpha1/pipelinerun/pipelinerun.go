@@ -22,26 +22,23 @@ import (
 	"reflect"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
-
 	"github.com/knative/build-pipeline/pkg/apis/pipeline"
 	"github.com/knative/build-pipeline/pkg/apis/pipeline/v1alpha1"
+	informers "github.com/knative/build-pipeline/pkg/client/informers/externalversions/pipeline/v1alpha1"
+	listers "github.com/knative/build-pipeline/pkg/client/listers/pipeline/v1alpha1"
 	"github.com/knative/build-pipeline/pkg/reconciler"
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/pipelinerun/resources"
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	"github.com/knative/pkg/controller"
-
 	"github.com/knative/pkg/tracker"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-
-	informers "github.com/knative/build-pipeline/pkg/client/informers/externalversions/pipeline/v1alpha1"
-	listers "github.com/knative/build-pipeline/pkg/client/listers/pipeline/v1alpha1"
 )
 
 const (
@@ -200,10 +197,23 @@ func (c *Reconciler) reconcile(ctx context.Context, pr *v1alpha1.PipelineRun) er
 		}
 		return fmt.Errorf("error getting Tasks for Pipeline %s: %s", p.Name, err)
 	}
+
+	if err := resources.ValidateProvidedBy(pipelineState); err != nil {
+		// This Run has failed, so we need to mark it as failed and stop reconciling it
+		pr.Status.SetCondition(&duckv1alpha1.Condition{
+			Type:   duckv1alpha1.ConditionSucceeded,
+			Status: corev1.ConditionFalse,
+			Reason: ReasonFailedValidation,
+			Message: fmt.Sprintf("Pipeline %s can't be Run; it invalid input/output linkages: %s",
+				fmt.Sprintf("%s/%s", p.Namespace, pr.Name), err),
+		})
+		return nil
+	}
+
 	for _, rprt := range pipelineState {
 		err := taskrun.ValidateResolvedTaskResources(rprt.PipelineTask.Params, rprt.ResolvedTaskResources)
 		if err != nil {
-			c.Logger.Error("Failed to validate pipelinerun %s with error %v", pr.Name, err)
+			c.Logger.Error("Failed to validate pipelinerun %q with error %v", pr.Name, err)
 			pr.Status.SetCondition(&duckv1alpha1.Condition{
 				Type:    duckv1alpha1.ConditionSucceeded,
 				Status:  corev1.ConditionFalse,
@@ -241,13 +251,13 @@ func (c *Reconciler) reconcile(ctx context.Context, pr *v1alpha1.PipelineRun) er
 
 	reconciler.EmitEvent(c.Recorder, before, after, pr)
 
-	UpdateTaskRunsStatus(pr, pipelineState)
+	updateTaskRunsStatus(pr, pipelineState)
 
 	c.Logger.Infof("PipelineRun %s status is being set to %s", pr.Name, pr.Status)
 	return nil
 }
 
-func UpdateTaskRunsStatus(pr *v1alpha1.PipelineRun, pipelineState []*resources.ResolvedPipelineRunTask) {
+func updateTaskRunsStatus(pr *v1alpha1.PipelineRun, pipelineState []*resources.ResolvedPipelineRunTask) {
 	for _, rprt := range pipelineState {
 		if rprt.TaskRun != nil {
 			pr.Status.TaskRuns[rprt.TaskRun.Name] = rprt.TaskRun.Status

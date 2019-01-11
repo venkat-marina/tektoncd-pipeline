@@ -17,27 +17,7 @@
 # This script calls out to scripts in knative/test-infra to setup a cluster
 # and deploy the Pipeline CRD to it for running integration tests.
 
-source $(dirname $0)/../vendor/github.com/knative/test-infra/scripts/e2e-tests.sh
 source $(dirname $0)/e2e-common.sh
-
-# Helper functions.
-
-function teardown() {
-    header "Tearing down Pipeline CRD"
-    ko delete --ignore-not-found=true -f config/
-    # teardown will be called when run against an existing cluster to cleanup before
-    # continuing, so we must wait for the cleanup to complete or the subsequent attempt
-    # to deploy to the same namespace will fail
-    wait_until_object_does_not_exist namespace knative-build-pipeline
-}
-
-# Called by `fail_test` (provided by `e2e-tests.sh`) to dump info on test failure
-function dump_extra_cluster_state() {
-  echo ">>> Pipeline controller log:"
-  kubectl -n knative-build-pipeline logs $(get_app_pod build-pipeline-controller knative-build-pipeline)
-  echo ">>> Pipeline webhook log:"
-  kubectl -n knative-build-pipeline logs $(get_app_pod build-pipeline-webhook knative-build-pipeline)
-}
 
 # Script entry point.
 
@@ -61,11 +41,10 @@ failed=0
 header "Running Go e2e tests"
 go_test_e2e -timeout=20m ./test || failed=1
 
-# Run the smoke tests for the examples dir to make sure they are valid
 # Run these _after_ the integration tests b/c they don't quite work all the way
 # and they cause a lot of noise in the logs, making it harder to debug integration
 # test failures.
-$(dirname $0)/e2e-yaml-tests.sh
+${REPO_ROOT_DIR}/test/e2e-tests-yaml.sh --run-tests || failed=1
 
 (( failed )) && fail_test
 success

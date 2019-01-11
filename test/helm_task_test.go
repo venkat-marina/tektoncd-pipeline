@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/knative/build-pipeline/pkg/apis/pipeline/v1alpha1"
-	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	knativetest "github.com/knative/pkg/test"
 	"github.com/knative/pkg/test/logging"
 	corev1 "k8s.io/api/core/v1"
@@ -85,17 +84,7 @@ func TestHelmDeployPipelineRun(t *testing.T) {
 	}
 
 	// Verify status of PipelineRun (wait for it)
-	if err := WaitForPipelineRunState(c, helmDeployPipelineRunName, timeout, func(pr *v1alpha1.PipelineRun) (bool, error) {
-		c := pr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
-		if c != nil {
-			if c.Status == corev1.ConditionTrue {
-				return true, nil
-			} else if c.Status == corev1.ConditionFalse {
-				return true, fmt.Errorf("pipeline run %s failed!", helmDeployPipelineRunName)
-			}
-		}
-		return false, nil
-	}, "PipelineRunCompleted"); err != nil {
+	if err := WaitForPipelineRunState(c, helmDeployPipelineRunName, timeout, PipelineRunSucceed(helmDeployPipelineRunName), "PipelineRunCompleted"); err != nil {
 		t.Errorf("Error waiting for PipelineRun %s to finish: %s", helmDeployPipelineRunName, err)
 		taskruns, err := c.TaskRunClient.List(metav1.ListOptions{})
 		if err != nil {
@@ -285,7 +274,7 @@ func getHelmDeployPipelineRun(namespace string) *v1alpha1.PipelineRun {
 			PipelineRef: v1alpha1.PipelineRef{
 				Name: helmDeployPipelineName,
 			},
-			PipelineTriggerRef: v1alpha1.PipelineTriggerRef{
+			PipelineTrigger: v1alpha1.PipelineTrigger{
 				Type: v1alpha1.PipelineTriggerTypeManual,
 			},
 			PipelineTaskResources: []v1alpha1.PipelineTaskResource{{
@@ -433,9 +422,7 @@ func removeAllHelmReleases(c *clients, t *testing.T, namespace string, logger *l
 				Name: helmRemoveAllTaskName,
 			},
 			Trigger: v1alpha1.TaskTrigger{
-				TriggerRef: v1alpha1.TaskTriggerRef{
-					Type: v1alpha1.TaskTriggerTypeManual,
-				},
+				Type: v1alpha1.TaskTriggerTypeManual,
 			},
 		},
 	}
@@ -451,17 +438,7 @@ func removeAllHelmReleases(c *clients, t *testing.T, namespace string, logger *l
 	}
 
 	logger.Infof("Waiting for TaskRun %s in namespace %s to complete", helmRemoveAllTaskRunName, namespace)
-	if err := WaitForTaskRunState(c, helmRemoveAllTaskRunName, func(tr *v1alpha1.TaskRun) (bool, error) {
-		c := tr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
-		if c != nil {
-			if c.Status == corev1.ConditionTrue {
-				return true, nil
-			} else if c.Status == corev1.ConditionFalse {
-				return true, fmt.Errorf("task run %s failed!", hwPipelineRunName)
-			}
-		}
-		return false, nil
-	}, "TaskRunSuccess"); err != nil {
+	if err := WaitForTaskRunState(c, helmRemoveAllTaskRunName, TaskRunSucceed(helmRemoveAllTaskRunName), "TaskRunSuccess"); err != nil {
 		logger.Infof("TaskRun %s failed to finish: %s", helmRemoveAllTaskRunName, err)
 	}
 }
@@ -493,9 +470,7 @@ func removeHelmFromCluster(c *clients, t *testing.T, namespace string, logger *l
 				Name: helmResetTaskName,
 			},
 			Trigger: v1alpha1.TaskTrigger{
-				TriggerRef: v1alpha1.TaskTriggerRef{
-					Type: v1alpha1.TaskTriggerTypeManual,
-				},
+				Type: v1alpha1.TaskTriggerTypeManual,
 			},
 		},
 	}
@@ -511,17 +486,7 @@ func removeHelmFromCluster(c *clients, t *testing.T, namespace string, logger *l
 	}
 
 	logger.Infof("Waiting for TaskRun %s in namespace %s to complete", helmResetTaskRunName, namespace)
-	if err := WaitForTaskRunState(c, helmResetTaskRunName, func(tr *v1alpha1.TaskRun) (bool, error) {
-		c := tr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
-		if c != nil {
-			if c.Status == corev1.ConditionTrue {
-				return true, nil
-			} else if c.Status == corev1.ConditionFalse {
-				return true, fmt.Errorf("task run run %s failed!", hwPipelineRunName)
-			}
-		}
-		return false, nil
-	}, "TaskRunSuccess"); err != nil {
+	if err := WaitForTaskRunState(c, helmResetTaskRunName, TaskRunSucceed(helmResetTaskRunName), "TaskRunSuccess"); err != nil {
 		logger.Infof("TaskRun %s failed to finish: %s", helmResetTaskRunName, err)
 	}
 }

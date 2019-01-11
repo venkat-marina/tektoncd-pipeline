@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package taskrun_test
+package taskrun
 
 import (
 	"context"
@@ -23,50 +23,92 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/knative/build-pipeline/pkg/apis/pipeline/v1alpha1"
-	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun"
+	"github.com/knative/build-pipeline/pkg/reconciler"
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun/config"
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun/resources"
+	"github.com/knative/build-pipeline/pkg/system"
 	"github.com/knative/build-pipeline/test"
+	tb "github.com/knative/build-pipeline/test/builder"
 	buildv1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
+	"github.com/knative/pkg/configmap"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakekubeclientset "k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 )
 
-var (
-	groupVersionKind = schema.GroupVersionKind{
-		Group:   v1alpha1.SchemeGroupVersion.Group,
-		Version: v1alpha1.SchemeGroupVersion.Version,
-		Kind:    "TaskRun",
-	}
-)
-
 const (
 	entrypointLocation = "/tools/entrypoint"
 	toolsMountName     = "tools"
-	pvcSizeBytes       = 5 * 1024 * 1024 * 1024 // 5 GBs
 )
 
-var ignoreLastTransitionTime = cmpopts.IgnoreTypes(duckv1alpha1.Condition{}.LastTransitionTime.Inner.Time)
+var (
+	ignoreLastTransitionTime = cmpopts.IgnoreTypes(duckv1alpha1.Condition{}.LastTransitionTime.Inner.Time)
 
-var toolsMount = corev1.VolumeMount{
-	Name:      toolsMountName,
-	MountPath: "/tools",
-}
+	toolsMount = corev1.VolumeMount{
+		Name:      toolsMountName,
+		MountPath: "/tools",
+	}
 
-var entrypointCopyStep = corev1.Container{
-	Name:         "place-tools",
-	Image:        config.DefaultEntrypointImage,
-	Command:      []string{"/bin/cp"},
-	Args:         []string{"/entrypoint", entrypointLocation},
-	VolumeMounts: []corev1.VolumeMount{toolsMount},
-}
+	entrypointCopyStep = tb.BuildStep("place-tools", config.DefaultEntrypointImage,
+		tb.Command("/bin/cp"),
+		tb.Args("/entrypoint", entrypointLocation),
+		tb.VolumeMount(toolsMount),
+	)
+
+	entrypointOptionEnvVar = tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`)
+
+	simpleStep  = tb.Step("simple-step", "foo", tb.Command("/mycmd"))
+	simpleTask  = tb.Task("test-task", "foo", tb.TaskSpec(simpleStep))
+	clustertask = tb.ClusterTask("test-cluster-task", tb.ClusterTaskSpec(simpleStep))
+
+	outputTask = tb.Task("test-output-task", "foo", tb.TaskSpec(
+		simpleStep, tb.TaskInputs(
+			tb.InputsResource(gitResource.Name, v1alpha1.PipelineResourceTypeGit),
+			tb.InputsResource(anotherGitResource.Name, v1alpha1.PipelineResourceTypeGit),
+		),
+		tb.TaskOutputs(tb.OutputsResource(gitResource.Name, v1alpha1.PipelineResourceTypeGit)),
+	))
+
+	saTask = tb.Task("test-with-sa", "foo", tb.TaskSpec(tb.Step("sa-step", "foo", tb.Command("/mycmd"))))
+
+	templatedTask = tb.Task("test-task-with-templating", "foo", tb.TaskSpec(
+		tb.TaskInputs(tb.InputsResource("workspace", v1alpha1.PipelineResourceTypeGit)),
+		tb.TaskOutputs(tb.OutputsResource("myimage", v1alpha1.PipelineResourceTypeImage)),
+		tb.Step("mycontainer", "myimage", tb.Command("/mycmd"), tb.Args(
+			"--my-arg=${inputs.params.myarg}",
+			"--my-additional-arg=${outputs.resources.myimage.url}",
+		)),
+		tb.Step("myothercontainer", "myotherimage", tb.Command("/mycmd"), tb.Args(
+			"--my-other-arg=${inputs.resources.workspace.url}",
+		)),
+	))
+	defaultTemplatedTask = tb.Task("test-task-with-default-templating", "foo", tb.TaskSpec(
+		tb.TaskInputs(tb.InputsParam("myarg", tb.ParamDefault("mydefault"))),
+		tb.Step("mycontainer", "myimage", tb.Command("/mycmd"), tb.Args(
+			"--my-arg=${inputs.params.myarg}",
+		)),
+		tb.Step("myothercontainer", "myotherimage", tb.Command("/mycmd"), tb.Args(
+			"--my-other-arg=${inputs.resources.git-resource.url}",
+		)),
+	))
+
+	gitResource = tb.PipelineResource("git-resource", "foo", tb.PipelineResourceSpec(
+		v1alpha1.PipelineResourceTypeGit, tb.PipelineResourceSpecParam("URL", "https://foo.git"),
+	))
+	anotherGitResource = tb.PipelineResource("another-git-resource", "foo", tb.PipelineResourceSpec(
+		v1alpha1.PipelineResourceTypeGit, tb.PipelineResourceSpecParam("URL", "https://foobar.git"),
+	))
+	imageResource = tb.PipelineResource("image-resource", "foo", tb.PipelineResourceSpec(
+		v1alpha1.PipelineResourceTypeImage, tb.PipelineResourceSpecParam("URL", "gcr.io/kristoff/sven"),
+	))
+)
 
 func getExpectedPVC(tr *v1alpha1.TaskRun) *corev1.PersistentVolumeClaim {
 	return &corev1.PersistentVolumeClaim{
@@ -91,178 +133,6 @@ func getExpectedPVC(tr *v1alpha1.TaskRun) *corev1.PersistentVolumeClaim {
 	}
 }
 
-var simpleTask = &v1alpha1.Task{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "test-task",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.TaskSpec{
-		Steps: []corev1.Container{{
-			Name:    "simple-step",
-			Image:   "foo",
-			Command: []string{"/mycmd"},
-		}},
-	},
-}
-
-var clustertask = &v1alpha1.ClusterTask{
-	ObjectMeta: metav1.ObjectMeta{
-		Name: "test-cluster-task",
-	},
-	Spec: v1alpha1.TaskSpec{
-		Steps: []corev1.Container{{
-			Name:    "simple-step",
-			Image:   "foo",
-			Command: []string{"/mycmd"},
-		}},
-	},
-}
-
-var outputTask = &v1alpha1.Task{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "test-output-task",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.TaskSpec{
-		Steps: []corev1.Container{{
-			Name:    "simple-step",
-			Image:   "foo",
-			Command: []string{"/mycmd"},
-		}},
-		Inputs: &v1alpha1.Inputs{
-			Resources: []v1alpha1.TaskResource{{
-				Name: gitResource.Name,
-				Type: v1alpha1.PipelineResourceTypeGit,
-			}, {
-				Name: anotherGitResource.Name,
-				Type: v1alpha1.PipelineResourceTypeGit,
-			}},
-		},
-		Outputs: &v1alpha1.Outputs{
-			Resources: []v1alpha1.TaskResource{{
-				Name: gitResource.Name,
-				Type: v1alpha1.PipelineResourceTypeGit,
-			}},
-		},
-	},
-}
-
-var saTask = &v1alpha1.Task{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "test-with-sa",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.TaskSpec{
-		Steps: []corev1.Container{{
-			Name:    "sa-step",
-			Image:   "foo",
-			Command: []string{"/mycmd"},
-		}},
-	},
-}
-
-var templatedTask = &v1alpha1.Task{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "test-task-with-templating",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.TaskSpec{
-		Inputs: &v1alpha1.Inputs{
-			Resources: []v1alpha1.TaskResource{{
-				Name: "workspace",
-				Type: "git",
-			}},
-		},
-		Outputs: &v1alpha1.Outputs{
-			Resources: []v1alpha1.TaskResource{{
-				Name: "myimage",
-				Type: "image",
-			}},
-		},
-		Steps: []corev1.Container{{
-			Name:    "mycontainer",
-			Image:   "myimage",
-			Command: []string{"/mycmd"},
-			Args: []string{
-				"--my-arg=${inputs.params.myarg}",
-				"--my-additional-arg=${outputs.resources.myimage.url}"},
-		}, {
-			Name:    "myothercontainer",
-			Image:   "myotherimage",
-			Command: []string{"/mycmd"},
-			Args:    []string{"--my-other-arg=${inputs.resources.workspace.url}"},
-		}},
-	},
-}
-
-var defaultTemplatedTask = &v1alpha1.Task{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "test-task-with-default-templating",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.TaskSpec{
-		Inputs: &v1alpha1.Inputs{
-			Params: []v1alpha1.TaskParam{{
-				Name:        "myarg",
-				Description: "mydesc",
-				Default:     "mydefault",
-			}},
-		},
-		Steps: []corev1.Container{{
-			Name:    "mycontainer",
-			Image:   "myimage",
-			Command: []string{"/mycmd"},
-			Args:    []string{"--my-arg=${inputs.params.myarg}"},
-		}, {
-			Name:    "myothercontainer",
-			Image:   "myotherimage",
-			Command: []string{"/mycmd"},
-			Args:    []string{"--my-other-arg=${inputs.resources.git-resource.url}"},
-		}},
-	},
-}
-
-var gitResource = &v1alpha1.PipelineResource{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "git-resource",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.PipelineResourceSpec{
-		Type: "git",
-		Params: []v1alpha1.Param{{
-			Name:  "URL",
-			Value: "https://foo.git",
-		}},
-	},
-}
-
-var anotherGitResource = &v1alpha1.PipelineResource{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "another-git-resource",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.PipelineResourceSpec{
-		Type: "git",
-		Params: []v1alpha1.Param{{
-			Name:  "URL",
-			Value: "https://foobar.git",
-		}},
-	},
-}
-var imageResource = &v1alpha1.PipelineResource{
-	ObjectMeta: metav1.ObjectMeta{
-		Name:      "image-resource",
-		Namespace: "foo",
-	},
-	Spec: v1alpha1.PipelineResourceSpec{
-		Type: "image",
-		Params: []v1alpha1.Param{{
-			Name:  "URL",
-			Value: "gcr.io/kristoff/sven",
-		}},
-	},
-}
-
 func getToolsVolume(claimName string) corev1.Volume {
 	return corev1.Volume{
 		Name: toolsMountName,
@@ -278,218 +148,102 @@ func getRunName(tr *v1alpha1.TaskRun) string {
 	return strings.Join([]string{tr.Namespace, tr.Name}, "/")
 }
 
+// getTaskRunController returns an instance of the TaskRun controller/reconciler that has been seeded with
+// d, where d represents the state of the system (existing resources) needed for the test.
+func getTaskRunController(d test.Data) test.TestAssets {
+	c, i := test.SeedTestData(d)
+	observer, logs := observer.New(zap.InfoLevel)
+	configMapWatcher := configmap.NewInformedWatcher(c.Kube, system.Namespace)
+	return test.TestAssets{
+		Controller: NewController(
+			reconciler.Options{
+				Logger:            zap.New(observer).Sugar(),
+				KubeClientSet:     c.Kube,
+				PipelineClientSet: c.Pipeline,
+				ConfigMapWatcher:  configMapWatcher,
+			},
+			i.TaskRun,
+			i.Task,
+			i.ClusterTask,
+			i.PipelineResource,
+			i.Pod,
+		),
+		Logs:      logs,
+		Clients:   c,
+		Informers: i,
+	}
+}
+
 func TestReconcile(t *testing.T) {
-	taskruns := []*v1alpha1.TaskRun{{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-run-success",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       simpleTask.Name,
-				APIVersion: "a1",
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-with-sa-run-success",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			ServiceAccount: "test-sa",
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       saTask.Name,
-				APIVersion: "a1",
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-templating",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       templatedTask.Name,
-				APIVersion: "a1",
-			},
-			Inputs: v1alpha1.TaskRunInputs{
-				Params: []v1alpha1.Param{
-					{
-						Name:  "myarg",
-						Value: "foo",
-					},
-				},
-				Resources: []v1alpha1.TaskResourceBinding{
-					{
-						ResourceRef: v1alpha1.PipelineResourceRef{
-							Name:       gitResource.Name,
-							APIVersion: "a1",
-						},
-						Name: "workspace",
-					},
-				},
-			},
-			Outputs: v1alpha1.TaskRunOutputs{
-				Resources: []v1alpha1.TaskResourceBinding{{
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name:       "image-resource",
-						APIVersion: "a1",
-					},
-					Name: "myimage",
-				}},
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-overrides-default-templating",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       defaultTemplatedTask.Name,
-				APIVersion: "a1",
-			},
-			Inputs: v1alpha1.TaskRunInputs{
-				Params: []v1alpha1.Param{
-					{
-						Name:  "myarg",
-						Value: "foo",
-					},
-				},
-				Resources: []v1alpha1.TaskResourceBinding{{
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name:       gitResource.Name,
-						APIVersion: "a1",
-					},
-					Name: gitResource.Name,
-				}},
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-default-templating",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       defaultTemplatedTask.Name,
-				APIVersion: "a1",
-			},
-			Inputs: v1alpha1.TaskRunInputs{
-				Resources: []v1alpha1.TaskResourceBinding{{
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name:       gitResource.Name,
-						APIVersion: "a1",
-					},
-					Name: gitResource.Name,
-				}},
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-input-output",
-			Namespace: "foo",
-			OwnerReferences: []metav1.OwnerReference{{
-				Kind: "PipelineRun",
-				Name: "test",
-			}},
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name: outputTask.Name,
-			},
-			Inputs: v1alpha1.TaskRunInputs{
-				Resources: []v1alpha1.TaskResourceBinding{{
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name: gitResource.Name,
-					},
-					Name:  gitResource.Name,
-					Paths: []string{"source-folder"},
-				}, {
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name: anotherGitResource.Name,
-					},
-					Name:  anotherGitResource.Name,
-					Paths: []string{"source-folder"},
-				}},
-			},
-			Outputs: v1alpha1.TaskRunOutputs{
-				Resources: []v1alpha1.TaskResourceBinding{{
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name: gitResource.Name,
-					},
-					Name:  gitResource.Name,
-					Paths: []string{"output-folder"},
-				}},
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-with-taskSpec",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			Inputs: v1alpha1.TaskRunInputs{
-				Params: []v1alpha1.Param{
-					{
-						Name:  "myarg",
-						Value: "foo",
-					},
-				},
-				Resources: []v1alpha1.TaskResourceBinding{
-					{
-						ResourceRef: v1alpha1.PipelineResourceRef{
-							Name:       gitResource.Name,
-							APIVersion: "a1",
-						},
-						Name: "workspace",
-					},
-				},
-			},
-			TaskSpec: &v1alpha1.TaskSpec{
-				Inputs: &v1alpha1.Inputs{
-					Resources: []v1alpha1.TaskResource{{
-						Type: "git",
-						Name: "workspace",
-					}},
-					Params: []v1alpha1.TaskParam{{
-						Name:        "myarg",
-						Description: "mydesc",
-						Default:     "mydefault",
-					}},
-				},
-				Steps: []corev1.Container{{
-					Name:    "mycontainer",
-					Image:   "myimage",
-					Command: []string{"/mycmd"},
-					Args:    []string{"--my-arg=${inputs.params.myarg}"},
-				}},
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-with-task-sa-run-success",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       saTask.Name,
-				APIVersion: "a1",
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-with-cluster-task",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       clustertask.Name,
-				APIVersion: "a1",
-				Kind:       "ClusterTask",
-			},
-		},
-	}}
+	taskRunSuccess := tb.TaskRun("test-taskrun-run-success", "foo", tb.TaskRunSpec(
+		tb.TaskRunTaskRef(simpleTask.Name, tb.TaskRefAPIVersion("a1")),
+	))
+	taskRunWithSaSuccess := tb.TaskRun("test-taskrun-with-sa-run-success", "foo", tb.TaskRunSpec(
+		tb.TaskRunTaskRef(saTask.Name, tb.TaskRefAPIVersion("a1")), tb.TaskRunServiceAccount("test-sa"),
+	))
+	taskRunTemplating := tb.TaskRun("test-taskrun-templating", "foo", tb.TaskRunSpec(
+		tb.TaskRunTaskRef(templatedTask.Name, tb.TaskRefAPIVersion("a1")),
+		tb.TaskRunInputs(
+			tb.TaskRunInputsParam("myarg", "foo"),
+			tb.TaskRunInputsResource("workspace", tb.ResourceBindingRef(gitResource.Name)),
+		),
+		tb.TaskRunOutputs(tb.TaskRunOutputsResource("myimage", tb.ResourceBindingRef("image-resource"))),
+	))
+	taskRunOverrivdesDefaultTemplating := tb.TaskRun("test-taskrun-overrides-default-templating", "foo", tb.TaskRunSpec(
+		tb.TaskRunTaskRef(defaultTemplatedTask.Name, tb.TaskRefAPIVersion("a1")),
+		tb.TaskRunInputs(
+			tb.TaskRunInputsParam("myarg", "foo"),
+			tb.TaskRunInputsResource(gitResource.Name),
+		),
+	))
+	taskRunDefaultTemplating := tb.TaskRun("test-taskrun-default-templating", "foo", tb.TaskRunSpec(
+		tb.TaskRunTaskRef(defaultTemplatedTask.Name, tb.TaskRefAPIVersion("a1")),
+		tb.TaskRunInputs(
+			tb.TaskRunInputsResource(gitResource.Name),
+		),
+	))
+	taskRunInputOutput := tb.TaskRun("test-taskrun-input-output", "foo",
+		tb.TaskRunOwnerReference("PipelineRun", "test"),
+		tb.TaskRunSpec(
+			tb.TaskRunTaskRef(outputTask.Name),
+			tb.TaskRunInputs(
+				tb.TaskRunInputsResource(gitResource.Name,
+					tb.ResourceBindingPaths("source-folder"),
+				),
+				tb.TaskRunInputsResource(anotherGitResource.Name,
+					tb.ResourceBindingPaths("source-folder"),
+				),
+			),
+			tb.TaskRunOutputs(
+				tb.TaskRunOutputsResource(gitResource.Name,
+					tb.ResourceBindingPaths("output-folder"),
+				),
+			),
+		),
+	)
+	taskRunWithTaskSpec := tb.TaskRun("test-taskrun-with-taskSpec", "foo", tb.TaskRunSpec(
+		tb.TaskRunInputs(
+			tb.TaskRunInputsParam("myarg", "foo"),
+			tb.TaskRunInputsResource("workspace", tb.ResourceBindingRef(gitResource.Name)),
+		),
+		tb.TaskRunTaskSpec(
+			tb.TaskInputs(
+				tb.InputsResource("workspace", v1alpha1.PipelineResourceTypeGit),
+				tb.InputsParam("myarg", tb.ParamDefault("mydefault")),
+			),
+			tb.Step("mycontainer", "myimage", tb.Command("/mycmd"),
+				tb.Args("--my-arg=${inputs.params.myarg}"),
+			),
+		),
+	))
+	taskRunWithClusterTask := tb.TaskRun("test-taskrun-with-cluster-task", "foo",
+		tb.TaskRunSpec(tb.TaskRunTaskRef(clustertask.Name, tb.TaskRefKind(v1alpha1.ClusterTaskKind))),
+	)
+	taskruns := []*v1alpha1.TaskRun{
+		taskRunSuccess, taskRunWithSaSuccess,
+		taskRunTemplating, taskRunOverrivdesDefaultTemplating, taskRunDefaultTemplating,
+		taskRunInputOutput, taskRunWithTaskSpec, taskRunWithClusterTask,
+	}
 
 	d := test.Data{
 		TaskRuns:          taskruns,
@@ -503,275 +257,122 @@ func TestReconcile(t *testing.T) {
 		wantBuildSpec buildv1alpha1.BuildSpec
 	}{{
 		name:    "success",
-		taskRun: taskruns[0],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "simple-step",
-					Image:   "foo",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				},
-			},
-			Volumes: []corev1.Volume{
-				getToolsVolume(taskruns[0].Name),
-			},
-		},
+		taskRun: taskRunSuccess,
+		wantBuildSpec: tb.BuildSpec(
+			entrypointCopyStep,
+			tb.BuildStep("simple-step", "foo", tb.Command(entrypointLocation),
+				entrypointOptionEnvVar, tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunSuccess.Name)),
+		),
 	}, {
 		name:    "serviceaccount",
-		taskRun: taskruns[1],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			ServiceAccountName: "test-sa",
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "sa-step",
-					Image:   "foo",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				},
-			},
-			Volumes: []corev1.Volume{
-				getToolsVolume(taskruns[1].Name),
-			},
-		},
+		taskRun: taskRunWithSaSuccess,
+		wantBuildSpec: tb.BuildSpec(
+			tb.BuildServiceAccountName("test-sa"),
+			entrypointCopyStep,
+			tb.BuildStep("sa-step", "foo", tb.Command(entrypointLocation),
+				entrypointOptionEnvVar, tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunWithSaSuccess.Name)),
+		),
 	}, {
 		name:    "params",
-		taskRun: taskruns[2],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Sources: []buildv1alpha1.SourceSpec{{
-				Git: &buildv1alpha1.GitSourceSpec{
-					Url:      "https://foo.git",
-					Revision: "master",
-				},
-				Name: "git-resource",
-			}},
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "mycontainer",
-					Image:   "myimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-arg=foo","--my-additional-arg=gcr.io/kristoff/sven"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				}, {
-					Name:    "myothercontainer",
-					Image:   "myotherimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-other-arg=https://foo.git"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				}},
-			Volumes: []corev1.Volume{
-				getToolsVolume(taskruns[2].Name),
-			},
-		},
+		taskRun: taskRunTemplating,
+		wantBuildSpec: tb.BuildSpec(
+			tb.BuildSource("git-resource", tb.BuildSourceGit("https://foo.git", "master")),
+			entrypointCopyStep,
+			tb.BuildStep("mycontainer", "myimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-arg=foo","--my-additional-arg=gcr.io/kristoff/sven"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildStep("myothercontainer", "myotherimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-other-arg=https://foo.git"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunTemplating.Name)),
+		),
 	}, {
 		name:    "input-overrides-default-params",
-		taskRun: taskruns[3],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "mycontainer",
-					Image:   "myimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-arg=foo"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				}, {
-					Name:    "myothercontainer",
-					Image:   "myotherimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-other-arg=https://foo.git"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				},
-			},
-			Volumes: []corev1.Volume{getToolsVolume(taskruns[3].Name)},
-		},
+		taskRun: taskRunOverrivdesDefaultTemplating,
+		wantBuildSpec: tb.BuildSpec(
+			entrypointCopyStep,
+			tb.BuildStep("mycontainer", "myimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-arg=foo"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildStep("myothercontainer", "myotherimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-other-arg=https://foo.git"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunOverrivdesDefaultTemplating.Name)),
+		),
 	}, {
 		name:    "default-params",
-		taskRun: taskruns[4],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "mycontainer",
-					Image:   "myimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-arg=mydefault"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				}, {
-					Name:    "myothercontainer",
-					Image:   "myotherimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-other-arg=https://foo.git"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				},
-			},
-			Volumes: []corev1.Volume{getToolsVolume(taskruns[4].Name)},
-		},
+		taskRun: taskRunDefaultTemplating,
+		wantBuildSpec: tb.BuildSpec(
+			entrypointCopyStep,
+			tb.BuildStep("mycontainer", "myimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-arg=mydefault"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildStep("myothercontainer", "myotherimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-other-arg=https://foo.git"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunDefaultTemplating.Name)),
+		),
 	}, {
 		name:    "wrap-steps",
-		taskRun: taskruns[5],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Sources: []buildv1alpha1.SourceSpec{{
-				Git:  &buildv1alpha1.GitSourceSpec{Url: "https://foo.git", Revision: "master"},
-				Name: "git-resource",
-			}, {
-				Git:  &buildv1alpha1.GitSourceSpec{Url: "https://foobar.git", Revision: "master"},
-				Name: "another-git-resource",
-			}},
-			Steps: []corev1.Container{
-				{
-					Name:    "source-copy-another-git-resource-0",
-					Image:   "busybox",
-					Command: []string{"cp"}, Args: []string{"-r", "source-folder/.", "/workspace"},
-					VolumeMounts: []corev1.VolumeMount{{Name: "test-pvc", MountPath: "/pvc"}},
-				},
-				{
-					Name:    "source-copy-git-resource-0",
-					Image:   "busybox",
-					Command: []string{"cp"}, Args: []string{"-r", "source-folder/.", "/workspace"},
-					VolumeMounts: []corev1.VolumeMount{{Name: "test-pvc", MountPath: "/pvc"}},
-				},
-				entrypointCopyStep, {
-					Name:    "simple-step",
-					Image:   "foo",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				}, {
-					Name:         "source-mkdir-git-resource",
-					Image:        "busybox",
-					Command:      []string{"mkdir"},
-					Args:         []string{"-p", "output-folder"},
-					VolumeMounts: []corev1.VolumeMount{{Name: "test-pvc", MountPath: "/pvc"}},
-				}, {
-					Name:         "source-copy-git-resource",
-					Image:        "busybox",
-					Command:      []string{"cp"},
-					Args:         []string{"-r", "/workspace/.", "output-folder"},
-					VolumeMounts: []corev1.VolumeMount{{Name: "test-pvc", MountPath: "/pvc"}},
-				}},
-			Volumes: []corev1.Volume{
-				getToolsVolume(taskruns[5].Name),
-				resources.GetPVCVolume(taskruns[5].GetPipelineRunPVCName()),
-			},
-		},
+		taskRun: taskRunInputOutput,
+		wantBuildSpec: tb.BuildSpec(
+			tb.BuildStep("source-copy-another-git-resource-0", "override-with-bash-noop:latest",
+				tb.Args("-args", "cp -r source-folder/. /workspace"),
+				tb.VolumeMount(corev1.VolumeMount{Name: "test-pvc", MountPath: "/pvc"}),
+			),
+			tb.BuildStep("source-copy-git-resource-0", "override-with-bash-noop:latest",
+				tb.Args("-args", "cp -r source-folder/. /workspace"),
+				tb.VolumeMount(corev1.VolumeMount{Name: "test-pvc", MountPath: "/pvc"}),
+			),
+			entrypointCopyStep,
+			tb.BuildStep("simple-step", "foo", tb.Command(entrypointLocation),
+				entrypointOptionEnvVar, tb.VolumeMount(toolsMount),
+			),
+			tb.BuildStep("source-mkdir-git-resource", "override-with-bash-noop:latest",
+				tb.Args("-args", "mkdir -p output-folder"),
+				tb.VolumeMount(corev1.VolumeMount{Name: "test-pvc", MountPath: "/pvc"}),
+			),
+			tb.BuildStep("source-copy-git-resource", "override-with-bash-noop:latest",
+				tb.Args("-args", "cp -r /workspace/. output-folder"),
+				tb.VolumeMount(corev1.VolumeMount{Name: "test-pvc", MountPath: "/pvc"}),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunInputOutput.Name)),
+			tb.BuildVolume(resources.GetPVCVolume(taskRunInputOutput.GetPipelineRunPVCName())),
+		),
 	}, {
 		name:    "taskrun-with-taskspec",
-		taskRun: taskruns[6],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Sources: []buildv1alpha1.SourceSpec{{
-				Name: "git-resource",
-				Git: &buildv1alpha1.GitSourceSpec{
-					Url:      "https://foo.git",
-					Revision: "master",
-				},
-			}},
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "mycontainer",
-					Image:   "myimage",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd","--my-arg=foo"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				},
-			},
-			Volumes: []corev1.Volume{
-				getToolsVolume(taskruns[6].Name),
-			},
-		},
+		taskRun: taskRunWithTaskSpec,
+		wantBuildSpec: tb.BuildSpec(
+			tb.BuildSource("git-resource", tb.BuildSourceGit("https://foo.git", "master")),
+			entrypointCopyStep,
+			tb.BuildStep("mycontainer", "myimage", tb.Command(entrypointLocation),
+				tb.EnvVar("ENTRYPOINT_OPTIONS", `{"args":["/mycmd","--my-arg=foo"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`),
+				tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunWithTaskSpec.Name)),
+		),
 	}, {
 		name:    "success-with-cluster-task",
-		taskRun: taskruns[8],
-		wantBuildSpec: buildv1alpha1.BuildSpec{
-			Steps: []corev1.Container{
-				entrypointCopyStep,
-				{
-					Name:    "simple-step",
-					Image:   "foo",
-					Command: []string{entrypointLocation},
-					Args:    []string{},
-					Env: []corev1.EnvVar{
-						{
-							Name:  "ENTRYPOINT_OPTIONS",
-							Value: `{"args":["/mycmd"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
-						},
-					},
-					VolumeMounts: []corev1.VolumeMount{toolsMount},
-				},
-			},
-			Volumes: []corev1.Volume{
-				getToolsVolume(taskruns[8].Name),
-			},
-		},
+		taskRun: taskRunWithClusterTask,
+		wantBuildSpec: tb.BuildSpec(entrypointCopyStep,
+			tb.BuildStep("simple-step", "foo", tb.Command(entrypointLocation),
+				entrypointOptionEnvVar, tb.VolumeMount(toolsMount),
+			),
+			tb.BuildVolume(getToolsVolume(taskRunWithClusterTask.Name)),
+		),
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			testAssets := test.GetTaskRunController(d)
+			testAssets := getTaskRunController(d)
 			c := testAssets.Controller
 			clients := testAssets.Clients
 			saName := tc.taskRun.Spec.ServiceAccount
@@ -825,8 +426,8 @@ func TestReconcile(t *testing.T) {
 			if condition == nil || condition.Status != corev1.ConditionUnknown {
 				t.Errorf("Expected invalid TaskRun to have in progress status, but had %v", condition)
 			}
-			if condition != nil && condition.Reason != taskrun.ReasonRunning {
-				t.Errorf("Expected reason %q but was %s", taskrun.ReasonRunning, condition.Reason)
+			if condition != nil && condition.Reason != reasonRunning {
+				t.Errorf("Expected reason %q but was %s", reasonRunning, condition.Reason)
 			}
 
 			if len(clients.Kube.Actions()) == 0 {
@@ -859,33 +460,12 @@ func TestReconcile(t *testing.T) {
 }
 
 func TestReconcile_InvalidTaskRuns(t *testing.T) {
-	taskRuns := []*v1alpha1.TaskRun{{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "notaskrun",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       "notask",
-				APIVersion: "a1",
-			},
-		},
-	}, {
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "taskrun-with-wrong-ref",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       "notask",
-				APIVersion: "a1",
-				Kind:       "ClusterTask",
-			},
-		},
-	}}
-	tasks := []*v1alpha1.Task{
-		simpleTask,
-	}
+	noTaskRun := tb.TaskRun("notaskrun", "foo", tb.TaskRunSpec(tb.TaskRunTaskRef("notask")))
+	withWrongRef := tb.TaskRun("taskrun-with-wrong-ref", "foo", tb.TaskRunSpec(
+		tb.TaskRunTaskRef("taskrun-with-wrong-ref", tb.TaskRefKind(v1alpha1.ClusterTaskKind)),
+	))
+	taskRuns := []*v1alpha1.TaskRun{noTaskRun, withWrongRef}
+	tasks := []*v1alpha1.Task{simpleTask}
 
 	d := test.Data{
 		TaskRuns: taskRuns,
@@ -899,19 +479,19 @@ func TestReconcile_InvalidTaskRuns(t *testing.T) {
 	}{
 		{
 			name:    "task run with no task",
-			taskRun: taskRuns[0],
-			reason:  taskrun.ReasonFailedResolution,
+			taskRun: noTaskRun,
+			reason:  reasonFailedResolution,
 		},
 		{
 			name:    "task run with no task",
-			taskRun: taskRuns[1],
-			reason:  taskrun.ReasonFailedResolution,
+			taskRun: withWrongRef,
+			reason:  reasonFailedResolution,
 		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			testAssets := test.GetTaskRunController(d)
+			testAssets := getTaskRunController(d)
 			c := testAssets.Controller
 			clients := testAssets.Clients
 			err := c.Reconciler.Reconcile(context.Background(), getRunName(tc.taskRun))
@@ -938,29 +518,16 @@ func TestReconcile_InvalidTaskRuns(t *testing.T) {
 }
 
 func TestReconcileBuildFetchError(t *testing.T) {
-	taskRun := &v1alpha1.TaskRun{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-run-success",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       "test-task",
-				APIVersion: "a1",
-			},
-		},
-		Status: v1alpha1.TaskRunStatus{
-			PodName: "will-not-be-found",
-		},
-	}
+	taskRun := tb.TaskRun("test-taskrun-run-success", "foo",
+		tb.TaskRunSpec(tb.TaskRunTaskRef("test-task")),
+		tb.TaskRunStatus(tb.PodName("will-not-be-found")),
+	)
 	d := test.Data{
-		TaskRuns: []*v1alpha1.TaskRun{
-			taskRun,
-		},
-		Tasks: []*v1alpha1.Task{simpleTask},
+		TaskRuns: []*v1alpha1.TaskRun{taskRun},
+		Tasks:    []*v1alpha1.Task{simpleTask},
 	}
 
-	testAssets := test.GetTaskRunController(d)
+	testAssets := getTaskRunController(d)
 	c := testAssets.Controller
 	clients := testAssets.Clients
 
@@ -978,18 +545,7 @@ func TestReconcileBuildFetchError(t *testing.T) {
 }
 
 func TestReconcileBuildUpdateStatus(t *testing.T) {
-	taskRun := &v1alpha1.TaskRun{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-taskrun-run-success",
-			Namespace: "foo",
-		},
-		Spec: v1alpha1.TaskRunSpec{
-			TaskRef: &v1alpha1.TaskRef{
-				Name:       "test-task",
-				APIVersion: "a1",
-			},
-		},
-	}
+	taskRun := tb.TaskRun("test-taskrun-run-success", "foo", tb.TaskRunSpec(tb.TaskRunTaskRef("test-task")))
 	build := &buildv1alpha1.Build{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      taskRun.Name,
@@ -998,7 +554,7 @@ func TestReconcileBuildUpdateStatus(t *testing.T) {
 		Spec: *simpleTask.Spec.GetBuildSpec(),
 	}
 	// TODO(jasonhall): This avoids a circular dependency where
-	// GetTaskRunController takes a test.Data which must be populated with
+	// getTaskRunController takes a test.Data which must be populated with
 	// a pod created from MakePod which requires a (fake) Kube client. When
 	// we remove Build entirely from this controller, we should simply
 	// specify the Pod we want to exist directly, and not call MakePod from
@@ -1017,14 +573,12 @@ func TestReconcileBuildUpdateStatus(t *testing.T) {
 		PodName: pod.Name,
 	}
 	d := test.Data{
-		TaskRuns: []*v1alpha1.TaskRun{
-			taskRun,
-		},
-		Tasks: []*v1alpha1.Task{simpleTask},
-		Pods:  []*corev1.Pod{pod},
+		TaskRuns: []*v1alpha1.TaskRun{taskRun},
+		Tasks:    []*v1alpha1.Task{simpleTask},
+		Pods:     []*corev1.Pod{pod},
 	}
 
-	testAssets := test.GetTaskRunController(d)
+	testAssets := getTaskRunController(d)
 	c := testAssets.Controller
 	clients := testAssets.Clients
 
@@ -1093,8 +647,8 @@ func TestUpdateStatusFromBuildStatus(t *testing.T) {
 			Conditions: []duckv1alpha1.Condition{{
 				Type:    duckv1alpha1.ConditionSucceeded,
 				Status:  corev1.ConditionUnknown,
-				Reason:  taskrun.ReasonRunning,
-				Message: taskrun.ReasonRunning,
+				Reason:  reasonRunning,
+				Message: reasonRunning,
 			}},
 			Steps: []v1alpha1.StepState{},
 		},
@@ -1217,7 +771,7 @@ func TestUpdateStatusFromBuildStatus(t *testing.T) {
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			taskRun := &v1alpha1.TaskRun{}
-			taskrun.UpdateStatusFromBuildStatus(taskRun, tc.buildStatus)
+			updateStatusFromBuildStatus(taskRun, tc.buildStatus)
 			if d := cmp.Diff(taskRun.Status, tc.expectedStatus, ignoreLastTransitionTime); d != "" {
 				t.Errorf("-want, +got: %v", d)
 			}
@@ -1233,33 +787,21 @@ func TestCreateRedirectedBuild(t *testing.T) {
 	}
 	ctx := config.ToContext(context.Background(), cfg)
 
-	tr := &v1alpha1.TaskRun{
-		Spec: v1alpha1.TaskRunSpec{
-			ServiceAccount: "sa",
-		},
-	}
-	tr.Name = "tr"
-	tr.Namespace = "tr"
+	tr := tb.TaskRun("tr", "tr", tb.TaskRunSpec(
+		tb.TaskRunServiceAccount("sa"),
+	))
+	bs := tb.BuildSpec(
+		tb.BuildStep("foo1", "bar1", tb.Command("abcd"), tb.Args("efgh")),
+		tb.BuildStep("foo2", "bar2", tb.Command("abcd"), tb.Args("efgh")),
+		tb.BuildVolume(corev1.Volume{Name: "v"}),
+	)
 
-	bs := &buildv1alpha1.BuildSpec{
-		Steps: []corev1.Container{
-			{
-				Command: []string{"abcd"},
-				Args:    []string{"efgh"},
-			},
-			{
-				Command: []string{"abcd"},
-				Args:    []string{"efgh"},
-			},
-		},
-		Volumes: []corev1.Volume{{Name: "v"}},
-	}
 	expectedSteps := len(bs.Steps) + 1
 	expectedVolumes := len(bs.Volumes) + 1
 
-	b, err := taskrun.CreateRedirectedBuild(ctx, bs, "pvc", tr)
+	b, err := createRedirectedBuild(ctx, &bs, "pvc", tr)
 	if err != nil {
-		t.Errorf("expected CreateRedirectedBuild to pass: %v", err)
+		t.Errorf("expected createRedirectedBuild to pass: %v", err)
 	}
 	if b.Name != tr.Name {
 		t.Errorf("names do not match: %s should be %s", b.Name, tr.Name)
@@ -1302,7 +844,7 @@ func TestReconcileOnCompletedTaskRun(t *testing.T) {
 		Tasks: []*v1alpha1.Task{simpleTask},
 	}
 
-	testAssets := test.GetTaskRunController(d)
+	testAssets := getTaskRunController(d)
 	c := testAssets.Controller
 	clients := testAssets.Clients
 
