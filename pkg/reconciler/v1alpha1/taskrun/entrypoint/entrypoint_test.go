@@ -1,4 +1,4 @@
-package entrypoint_test
+package entrypoint
 
 import (
 	"context"
@@ -17,7 +17,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun/config"
-	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun/entrypoint"
+)
+
+const (
+	exceedCacheSize = 10
 )
 
 func TestAddEntrypoint(t *testing.T) {
@@ -44,12 +47,12 @@ func TestAddEntrypoint(t *testing.T) {
 		`{"args":["abcd"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
 		`{"args":["abcd","efgh"],"process_log":"/tools/process-log.txt","marker_file":"/tools/marker-file.txt"}`,
 	}
-	err := entrypoint.RedirectSteps(inputs)
+	err := RedirectSteps(inputs)
 	if err != nil {
 		t.Errorf("failed to get resources: %v", err)
 	}
 	for i, input := range inputs {
-		if len(input.Command) == 0 || input.Command[0] != entrypoint.BinaryLocation {
+		if len(input.Command) == 0 || input.Command[0] != BinaryLocation {
 			t.Errorf("command incorrectly set: %q", input.Command)
 		}
 		if len(input.Args) > 0 {
@@ -59,13 +62,13 @@ func TestAddEntrypoint(t *testing.T) {
 			t.Error("there should be atleast one envvar")
 		}
 		for _, e := range input.Env {
-			if e.Name == entrypoint.JSONConfigEnvVar && e.Value != envVarStrings[i] {
+			if e.Name == JSONConfigEnvVar && e.Value != envVarStrings[i] {
 				t.Errorf("envvar \n%s\n does not match \n%s", e.Value, envVarStrings[i])
 			}
 		}
 		found := false
 		for _, vm := range input.VolumeMounts {
-			if vm.Name == entrypoint.MountName {
+			if vm.Name == MountName {
 				found = true
 				break
 			}
@@ -134,6 +137,11 @@ func mustConfigName(t *testing.T, img v1.Image) v1.Hash {
 	return h
 }
 
+func getDigestAsString(image v1.Image) string {
+	digestHash, _ := image.Digest()
+	return digestHash.String()
+}
+
 func TestGetRemoteEntrypoint(t *testing.T) {
 	expectedEntrypoint := []string{"/bin/expected", "entrypoint"}
 	img := getImage(t, &v1.ConfigFile{
@@ -142,8 +150,9 @@ func TestGetRemoteEntrypoint(t *testing.T) {
 		},
 	})
 	expectedRepo := "image"
+	digetsSha := getDigestAsString(img)
 	configPath := fmt.Sprintf("/v2/%s/blobs/%s", expectedRepo, mustConfigName(t, img))
-	manifestPath := fmt.Sprintf("/v2/%s/manifests/latest", expectedRepo)
+	manifestPath := fmt.Sprintf("/v2/%s/manifests/%s", expectedRepo, digetsSha)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -164,13 +173,82 @@ func TestGetRemoteEntrypoint(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	image := path.Join(strings.TrimPrefix(server.URL, "http://"), "image:latest")
-	ep, err := entrypoint.GetRemoteEntrypoint(entrypoint.NewCache(), image)
+	image := path.Join(strings.TrimPrefix(server.URL, "http://"), expectedRepo)
+	finalDigest := image + "@" + digetsSha
+
+	entrypointCache, err := NewCache()
+	if err != nil {
+		t.Fatalf("couldn't create new entrypoint cache: %v", err)
+	}
+	ep, err := GetRemoteEntrypoint(entrypointCache, finalDigest)
 	if err != nil {
 		t.Errorf("couldn't get entrypoint remote: %v", err)
 	}
 	if !reflect.DeepEqual(ep, expectedEntrypoint) {
 		t.Errorf("entrypoints do not match: %s should be %s", ep[0], expectedEntrypoint)
+	}
+}
+
+func TestGetImageDigest(t *testing.T) {
+	img := getImage(t, &v1.ConfigFile{
+		ContainerConfig: v1.Config{},
+	})
+	digetsSha := getDigestAsString(img)
+	expectedRepo := "image"
+	manifestPath := fmt.Sprintf("/v2/%s/manifests/latest", expectedRepo)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			w.WriteHeader(http.StatusOK)
+		case manifestPath:
+			if r.Method != http.MethodGet {
+				t.Errorf("Method; got %v, want %v", r.Method, http.MethodGet)
+			}
+			w.Write(mustRawManifest(t, img))
+		default:
+			t.Fatalf("Unexpected path: %v", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	image := path.Join(strings.TrimPrefix(server.URL, "http://"), "image:latest")
+	expectedDigetsSha := image + "@" + digetsSha
+
+	digestCache, err := NewCache()
+	if err != nil {
+		t.Fatalf("couldn't create new digest cache: %v", err)
+	}
+	digest, err := GetImageDigest(digestCache, image)
+	if err != nil {
+		t.Errorf("couldn't get digest remote: %v", err)
+	}
+	if !reflect.DeepEqual(expectedDigetsSha, digest) {
+		t.Errorf("digest do not match: %s should be %s", expectedDigetsSha, digest)
+	}
+}
+
+func TestEntrypointCacheLRU(t *testing.T) {
+	entrypoint := []string{"/bin/expected", "entrypoint"}
+	entrypointCache, err := NewCache()
+	if err != nil {
+		t.Fatalf("couldn't create new entrypoint cache: %v", err)
+	}
+
+	for i := 0; i < cacheSize+exceedCacheSize; i++ {
+		image := fmt.Sprintf("image%d:latest", i)
+		entrypointCache.set(image, entrypoint)
+	}
+	for i := 0; i < exceedCacheSize; i++ {
+		image := fmt.Sprintf("image%d:latest", i)
+		if _, ok := entrypointCache.get(image); ok {
+			t.Errorf("entrypoint of image %s should be expired", image)
+		}
+	}
+	for i := exceedCacheSize; i < cacheSize+exceedCacheSize; i++ {
+		image := fmt.Sprintf("image%d:latest", i)
+		if _, ok := entrypointCache.get(image); !ok {
+			t.Errorf("entrypoint of image %s shouldn't be expired", image)
+		}
 	}
 }
 
@@ -194,11 +272,11 @@ func TestAddCopyStep(t *testing.T) {
 	}
 
 	expectedSteps := len(bs.Steps) + 1
-	entrypoint.AddCopyStep(ctx, bs)
+	AddCopyStep(ctx, bs)
 	if len(bs.Steps) != 3 {
 		t.Errorf("BuildSpec has the wrong step count: %d should be %d", len(bs.Steps), expectedSteps)
 	}
-	if bs.Steps[0].Name != entrypoint.InitContainerName {
-		t.Errorf("entrypoint is incorrect: %s should be %s", bs.Steps[0].Name, entrypoint.InitContainerName)
+	if bs.Steps[0].Name != InitContainerName {
+		t.Errorf("entrypoint is incorrect: %s should be %s", bs.Steps[0].Name, InitContainerName)
 	}
 }

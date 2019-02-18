@@ -14,6 +14,8 @@ limitations under the License.
 package builder
 
 import (
+	"time"
+
 	"github.com/knative/build-pipeline/pkg/apis/pipeline/v1alpha1"
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/taskrun/resources"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
@@ -45,7 +47,10 @@ type TaskRunOp func(*v1alpha1.TaskRun)
 // TaskRunSpecOp is an operation which modify a TaskRunSpec struct.
 type TaskRunSpecOp func(*v1alpha1.TaskRunSpec)
 
-// TaskResourceBindingOp is an operation which modify a TaskResourceBindingOp struct.
+// TaskResourceOp is an operation which modify a TaskResource struct.
+type TaskResourceOp func(*v1alpha1.TaskResource)
+
+// TaskResourceBindingOp is an operation which modify a TaskResourceBinding struct.
 type TaskResourceBindingOp func(*v1alpha1.TaskResourceBinding)
 
 // TaskRunStatusOp is an operation which modify a TaskRunStatus struct.
@@ -63,11 +68,11 @@ type TaskRunOutputsOp func(*v1alpha1.TaskRunOutputs)
 // ResolvedTaskResourcesOp is an operation which modify a ResolvedTaskResources struct.
 type ResolvedTaskResourcesOp func(*resources.ResolvedTaskResources)
 
-// OwnerReferenceOp is an operation which modify an OwnerReference struct.
-type OwnerReferenceOp func(*metav1.OwnerReference)
-
 // StepStateOp is an operation which modify a StepStep struct.
 type StepStateOp func(*v1alpha1.StepState)
+
+// VolumeOp is an operation which modify a Volume struct.
+type VolumeOp func(*corev1.Volume)
 
 var (
 	trueB = true
@@ -148,6 +153,25 @@ func Step(name, image string, ops ...ContainerOp) TaskSpecOp {
 	}
 }
 
+// TaskVolume adds a volume with specified name to the TaskSpec.
+// Any number of Volume modifier can be passed to transform it.
+func TaskVolume(name string, ops ...VolumeOp) TaskSpecOp {
+	return func(spec *v1alpha1.TaskSpec) {
+		v := &corev1.Volume{Name: name}
+		for _, op := range ops {
+			op(v)
+		}
+		spec.Volumes = append(spec.Volumes, *v)
+	}
+}
+
+// VolumeSource sets the VolumeSource to the Volume.
+func VolumeSource(s corev1.VolumeSource) VolumeOp {
+	return func(v *corev1.Volume) {
+		v.VolumeSource = s
+	}
+}
+
 // TaskInputs sets inputs to the TaskSpec.
 // Any number of Inputs modifier can be passed to transform it.
 func TaskInputs(ops ...InputsOp) TaskSpecOp {
@@ -175,9 +199,20 @@ func TaskOutputs(ops ...OutputsOp) TaskSpecOp {
 }
 
 // InputsResource adds a resource, with specified name and type, to the Inputs.
-func InputsResource(name string, resourceType v1alpha1.PipelineResourceType) InputsOp {
+// Any number of TaskResource modifier can be passed to transform it.
+func InputsResource(name string, resourceType v1alpha1.PipelineResourceType, ops ...TaskResourceOp) InputsOp {
 	return func(i *v1alpha1.Inputs) {
-		i.Resources = append(i.Resources, v1alpha1.TaskResource{Name: name, Type: resourceType})
+		r := &v1alpha1.TaskResource{Name: name, Type: resourceType}
+		for _, op := range ops {
+			op(r)
+		}
+		i.Resources = append(i.Resources, *r)
+	}
+}
+
+func ResourceTargetPath(path string) TaskResourceOp {
+	return func(r *v1alpha1.TaskResource) {
+		r.TargetPath = path
 	}
 }
 
@@ -267,6 +302,34 @@ func StepState(ops ...StepStateOp) TaskRunStatusOp {
 	}
 }
 
+// TaskRunStartTime sets the start time to the TaskRunStatus.
+func TaskRunStartTime(startTime time.Time) TaskRunStatusOp {
+	return func(s *v1alpha1.TaskRunStatus) {
+		s.StartTime = &metav1.Time{Time: startTime}
+	}
+}
+
+// TaskRunTimeout sets the timeout duration to the TaskRunSpec.
+func TaskRunTimeout(d time.Duration) TaskRunSpecOp {
+	return func(spec *v1alpha1.TaskRunSpec) {
+		spec.Timeout = &metav1.Duration{Duration: d}
+	}
+}
+
+// TaskRunNodeSelector sets the NodeSelector to the PipelineSpec.
+func TaskRunNodeSelector(values map[string]string) TaskRunSpecOp {
+	return func(spec *v1alpha1.TaskRunSpec) {
+		spec.NodeSelector = values
+	}
+}
+
+// TaskRunAffinity sets the Affinity to the PipelineSpec.
+func TaskRunAffinity(affinity *corev1.Affinity) TaskRunSpecOp {
+	return func(spec *v1alpha1.TaskRunSpec) {
+		spec.Affinity = affinity
+	}
+}
+
 // StateTerminated set Terminated to the StepState.
 func StateTerminated(exitcode int) StepStateOp {
 	return func(s *v1alpha1.StepState) {
@@ -287,13 +350,6 @@ func TaskRunOwnerReference(kind, name string, ops ...OwnerReferenceOp) TaskRunOp
 			op(o)
 		}
 		tr.ObjectMeta.OwnerReferences = append(tr.ObjectMeta.OwnerReferences, *o)
-	}
-}
-
-// OwnerReferenceAPIVersion sets the APIVersion to the OwnerReference.
-func OwnerReferenceAPIVersion(version string) OwnerReferenceOp {
-	return func(o *metav1.OwnerReference) {
-		o.APIVersion = version
 	}
 }
 
@@ -324,6 +380,11 @@ func TaskRunSpec(ops ...TaskRunSpecOp) TaskRunOp {
 		}
 		tr.Spec = *spec
 	}
+}
+
+// TaskRunCancelled sets the status to cancel to the TaskRunSpec.
+func TaskRunCancelled(spec *v1alpha1.TaskRunSpec) {
+	spec.Status = v1alpha1.TaskRunSpecStatusCancelled
 }
 
 // TaskRunTaskRef sets the specified Task reference to the TaskRunSpec.
@@ -409,9 +470,6 @@ func TaskRunInputsResource(name string, ops ...TaskResourceBindingOp) TaskRunInp
 	return func(i *v1alpha1.TaskRunInputs) {
 		binding := &v1alpha1.TaskResourceBinding{
 			Name: name,
-			ResourceRef: v1alpha1.PipelineResourceRef{
-				Name: name,
-			},
 		}
 		for _, op := range ops {
 			op(binding)
@@ -420,22 +478,29 @@ func TaskRunInputsResource(name string, ops ...TaskResourceBindingOp) TaskRunInp
 	}
 }
 
-// ResourceBindingRef set the PipelineResourceRef name to the TaskResourceBinding.
-func ResourceBindingRef(name string) TaskResourceBindingOp {
+// TaskResourceBindingRef set the PipelineResourceRef name to the TaskResourceBinding.
+func TaskResourceBindingRef(name string) TaskResourceBindingOp {
 	return func(b *v1alpha1.TaskResourceBinding) {
 		b.ResourceRef.Name = name
 	}
 }
 
-// ResourceBindingRefAPIVersion set the PipelineResourceRef APIVersion to the TaskResourceBinding.
-func ResourceBindingRefAPIVersion(version string) TaskResourceBindingOp {
+// TaskResourceBindingResourceSpec set the PipelineResourceResourceSpec to the TaskResourceBinding.
+func TaskResourceBindingResourceSpec(spec *v1alpha1.PipelineResourceSpec) TaskResourceBindingOp {
+	return func(b *v1alpha1.TaskResourceBinding) {
+		b.ResourceSpec = spec
+	}
+}
+
+// TaskResourceBindingRefAPIVersion set the PipelineResourceRef APIVersion to the TaskResourceBinding.
+func TaskResourceBindingRefAPIVersion(version string) TaskResourceBindingOp {
 	return func(b *v1alpha1.TaskResourceBinding) {
 		b.ResourceRef.APIVersion = version
 	}
 }
 
-// ResourceBindingPaths add any number of path to the TaskResourceBinding.
-func ResourceBindingPaths(paths ...string) TaskResourceBindingOp {
+// TaskResourceBindingPaths add any number of path to the TaskResourceBinding.
+func TaskResourceBindingPaths(paths ...string) TaskResourceBindingOp {
 	return func(b *v1alpha1.TaskResourceBinding) {
 		b.Paths = paths
 	}

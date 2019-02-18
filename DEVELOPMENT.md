@@ -8,7 +8,7 @@
 1. [Create and checkout a repo fork](#checkout-your-fork)
 1. Set up your [shell environment](#environment-setup)
 1. Install [requirements](#requirements)
-1. [Set up a kubernetes cluster](#kubernetes-cluster)
+1. [Set up a Kubernetes cluster](#kubernetes-cluster)
 1. [Configure kubectl to use your cluster](https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/)
 1. [Set up a docker repository you can push to](https://github.com/knative/serving/blob/master/docs/setting-up-a-docker-registry.md)
 
@@ -53,7 +53,14 @@ You must install these tools:
 1. [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl/): For
    interacting with your kube cluster
 
+Your [`$GOPATH`] setting is critical for `ko apply` to function properly: a
+successful run will typically involve building pushing images instead of only
+configuring Kubernetes resources.
+
 ## Kubernetes cluster
+
+Docker for Desktop using an edge version has been proven to work for both
+developing and running Knative. Your Kubernetes version must be 1.11 or later.
 
 To setup a cluster with GKE:
 
@@ -78,7 +85,9 @@ environment variables (we recommend adding them to your `.bashrc`):
 1. `$GOPATH/bin` on `PATH`: This is so that tooling installed via `go get` will
    work properly.
 1. `KO_DOCKER_REPO`: The docker repository to which developer images should be
-   pushed (e.g. `gcr.io/[gcloud-project]`).
+   pushed (e.g. `gcr.io/[gcloud-project]`). You can also run a local registry
+   and set `KO_DOCKER_REPO` to reference the registry (e.g. at
+   `localhost:5000/myknativeimages`).
 
 `.bashrc` example:
 
@@ -135,12 +144,10 @@ To make changes to these CRDs, you will probably interact with:
 ## Install Pipeline
 
 You can stand up a version of this controller on-cluster (to your
-`kubectl config current-context`), including `knative/build` (which is wrapped
-by [`Task`](docs/Concepts.md#task)):
+`kubectl config current-context`):
 
 ```shell
 ko apply -f config/
-kubectl apply -f ./third_party/config/build/release.yaml
 ```
 
 ### Redeploy controller
@@ -157,7 +164,6 @@ You can clean up everything with:
 
 ```shell
 ko delete -f config/
-kubectl delete -f ./third_party/config/build/release.yaml
 ```
 
 ## Accessing logs
@@ -181,3 +187,5 @@ If you need to add a new CRD type, you will need to add:
 1. A yaml definition in [config/](./config)
 1. Add the type to the cluster roles in
    [200-clusterrole.yaml](./config/200-clusterrole.yaml)
+
+_See [the API compatibility policy](api_compatibility_policy.md)._

@@ -21,6 +21,7 @@ import (
 
 	"github.com/knative/pkg/apis"
 	"github.com/knative/pkg/webhook"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -52,6 +53,9 @@ type PipelineResourceInterface interface {
 	GetType() PipelineResourceType
 	GetParams() []Param
 	Replacements() map[string]string
+	GetDownloadContainerSpec() ([]corev1.Container, error)
+	GetUploadContainerSpec() ([]corev1.Container, error)
+	SetDestinationDirectory(string)
 }
 
 // SecretParam indicates which secret can be used to populate a field of the resource
@@ -68,8 +72,6 @@ type PipelineResourceSpec struct {
 	// Secrets to fetch to populate some of resource fields
 	// +optional
 	SecretParams []SecretParam `json:"secrets,omitempty"`
-	// +optional
-	Generation int64 `json:"generation,omitempty"`
 }
 
 // PipelineResourceStatus does not contain anything because Resources on their own
@@ -117,13 +119,27 @@ type PipelineResource struct {
 	Status PipelineResourceStatus `json:"status,omitempty"`
 }
 
+// PipelineResourceBinding connects a reference to an instance of a PipelineResource
+// with a PipelineResource dependency that the Pipeline has declared
+type PipelineResourceBinding struct {
+	// Name is the name of the PipelineResource in the Pipeline's declaration
+	Name string `json:"name"`
+	// ResourceRef is a reference to the instance of the actual PipelineResource
+	// that should be used
+	ResourceRef PipelineResourceRef `json:"resourceRef"`
+}
+
 // TaskResourceBinding points to the PipelineResource that
 // will be used for the Task input or output called Name. The optional Path field
 // corresponds to a path on disk at which the Resource can be found (used when providing
 // the resource via mounted volume, overriding the default logic to fetch the Resource).
 type TaskResourceBinding struct {
-	Name        string              `json:"name"`
+	Name string `json:"name"`
+	// no more than one of the ResourceRef and ResourceSpec may be specified.
+	// +optional
 	ResourceRef PipelineResourceRef `json:"resourceRef"`
+	// +optional
+	ResourceSpec *PipelineResourceSpec `json:"resourceSpec"`
 	// +optional
 	Paths []string `json:"paths"`
 }

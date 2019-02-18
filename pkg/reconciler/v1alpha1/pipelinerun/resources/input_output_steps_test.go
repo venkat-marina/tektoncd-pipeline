@@ -16,27 +16,37 @@ limitations under the License.
 package resources_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/knative/build-pipeline/pkg/apis/pipeline/v1alpha1"
 	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/pipelinerun/resources"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func Test_GetOutputSteps(t *testing.T) {
+var pvcDir = "/pvc"
+
+func TestGetOutputSteps(t *testing.T) {
+	r1 := &v1alpha1.PipelineResource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "resource1",
+		},
+	}
+	r2 := &v1alpha1.PipelineResource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "resource2",
+		},
+	}
 	tcs := []struct {
 		name                       string
-		taskResourceBinding        []v1alpha1.TaskResourceBinding
+		outputs                    map[string]*v1alpha1.PipelineResource
 		expectedtaskOuputResources []v1alpha1.TaskResourceBinding
 		pipelineTaskName           string
 	}{{
-		name: "output",
-		taskResourceBinding: []v1alpha1.TaskResourceBinding{{
-			Name: "test-output",
-			ResourceRef: v1alpha1.PipelineResourceRef{
-				Name: "resource1",
-			},
-		}},
+		name:    "single output",
+		outputs: map[string]*v1alpha1.PipelineResource{"test-output": r1},
 		expectedtaskOuputResources: []v1alpha1.TaskResourceBinding{{
 			Name:        "test-output",
 			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
@@ -45,13 +55,10 @@ func Test_GetOutputSteps(t *testing.T) {
 		pipelineTaskName: "test-taskname",
 	}, {
 		name: "multiple-outputs",
-		taskResourceBinding: []v1alpha1.TaskResourceBinding{{
-			Name:        "test-output",
-			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
-		}, {
-			Name:        "test-output-2",
-			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource2"},
-		}},
+		outputs: map[string]*v1alpha1.PipelineResource{
+			"test-output":   r1,
+			"test-output-2": r2,
+		},
 		expectedtaskOuputResources: []v1alpha1.TaskResourceBinding{{
 			Name:        "test-output",
 			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
@@ -65,7 +72,8 @@ func Test_GetOutputSteps(t *testing.T) {
 	}}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			postTasks := resources.GetOutputSteps(tc.taskResourceBinding, tc.pipelineTaskName)
+			postTasks := resources.GetOutputSteps(tc.outputs, tc.pipelineTaskName, pvcDir)
+			sort.SliceStable(postTasks, func(i, j int) bool { return postTasks[i].Name < postTasks[j].Name })
 			if d := cmp.Diff(postTasks, tc.expectedtaskOuputResources); d != "" {
 				t.Errorf("error comparing post steps: %s", d)
 			}
@@ -73,24 +81,28 @@ func Test_GetOutputSteps(t *testing.T) {
 	}
 }
 
-func Test_GetInputSteps(t *testing.T) {
+func TestGetInputSteps(t *testing.T) {
+	r1 := &v1alpha1.PipelineResource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "resource1",
+		},
+	}
 	tcs := []struct {
 		name                       string
-		taskResourceBinding        []v1alpha1.TaskResourceBinding
+		inputs                     map[string]*v1alpha1.PipelineResource
 		pipelineTask               *v1alpha1.PipelineTask
 		expectedtaskInputResources []v1alpha1.TaskResourceBinding
 	}{
 		{
-			name: "task-with-a-constraint",
-			taskResourceBinding: []v1alpha1.TaskResourceBinding{{
-				Name:        "test-input",
-				ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
-			}},
+			name:   "task-with-a-constraint",
+			inputs: map[string]*v1alpha1.PipelineResource{"test-input": r1},
 			pipelineTask: &v1alpha1.PipelineTask{
-				ResourceDependencies: []v1alpha1.ResourceDependency{{
-					Name:       "test-input",
-					ProvidedBy: []string{"prev-task-1"},
-				}},
+				Resources: &v1alpha1.PipelineTaskResources{
+					Inputs: []v1alpha1.PipelineTaskInputResource{{
+						Name: "test-input",
+						From: []string{"prev-task-1"},
+					}},
+				},
 			},
 			expectedtaskInputResources: []v1alpha1.TaskResourceBinding{{
 				ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
@@ -98,34 +110,25 @@ func Test_GetInputSteps(t *testing.T) {
 				Paths:       []string{"/pvc/prev-task-1/test-input"},
 			}},
 		}, {
-			name: "task-with-no-input-constraint",
-			taskResourceBinding: []v1alpha1.TaskResourceBinding{{
-				Name: "test-input",
-				ResourceRef: v1alpha1.PipelineResourceRef{
-					Name: "resource1",
-				},
-			}},
+			name:   "task-with-no-input-constraint",
+			inputs: map[string]*v1alpha1.PipelineResource{"test-input": r1},
 			expectedtaskInputResources: []v1alpha1.TaskResourceBinding{{
 				ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
 				Name:        "test-input",
 			}},
 			pipelineTask: &v1alpha1.PipelineTask{
 				Name: "sample-test-task",
-				ResourceDependencies: []v1alpha1.ResourceDependency{{
-					Name: "test-input",
-				}},
 			},
 		}, {
-			name: "task-with-multiple-constraints",
-			taskResourceBinding: []v1alpha1.TaskResourceBinding{{
-				Name:        "test-input",
-				ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
-			}},
+			name:   "task-with-multiple-constraints",
+			inputs: map[string]*v1alpha1.PipelineResource{"test-input": r1},
 			pipelineTask: &v1alpha1.PipelineTask{
-				ResourceDependencies: []v1alpha1.ResourceDependency{{
-					Name:       "test-input",
-					ProvidedBy: []string{"prev-task-1", "prev-task-2"},
-				}},
+				Resources: &v1alpha1.PipelineTaskResources{
+					Inputs: []v1alpha1.PipelineTaskInputResource{{
+						Name: "test-input",
+						From: []string{"prev-task-1", "prev-task-2"},
+					}},
+				},
 			},
 			expectedtaskInputResources: []v1alpha1.TaskResourceBinding{{
 				ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
@@ -136,7 +139,8 @@ func Test_GetInputSteps(t *testing.T) {
 	}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			taskInputResources := resources.GetInputSteps(tc.taskResourceBinding, tc.pipelineTask)
+			taskInputResources := resources.GetInputSteps(tc.inputs, tc.pipelineTask, pvcDir)
+			sort.SliceStable(taskInputResources, func(i, j int) bool { return taskInputResources[i].Name < taskInputResources[j].Name })
 			if d := cmp.Diff(tc.expectedtaskInputResources, taskInputResources); d != "" {
 				t.Errorf("error comparing task resource inputs: %s", d)
 			}
@@ -145,32 +149,32 @@ func Test_GetInputSteps(t *testing.T) {
 	}
 }
 
-func Test_WrapSteps(t *testing.T) {
-	taskRunSpec := &v1alpha1.TaskRunSpec{}
-	pipelineResources := []v1alpha1.PipelineTaskResource{{
-		Name: "test-task",
-		Inputs: []v1alpha1.TaskResourceBinding{{
-			Name:        "test-input",
-			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
-		}, {
-			Name:        "test-input-2",
-			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
-		}},
-		Outputs: []v1alpha1.TaskResourceBinding{{
-			Name:        "test-output",
-			ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
-		}},
-	}}
+func TestWrapSteps(t *testing.T) {
+	r1 := &v1alpha1.PipelineResource{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "resource1",
+		},
+	}
+	inputs := map[string]*v1alpha1.PipelineResource{
+		"test-input":   r1,
+		"test-input-2": r1,
+	}
+	outputs := map[string]*v1alpha1.PipelineResource{
+		"test-output": r1,
+	}
 
 	pt := &v1alpha1.PipelineTask{
 		Name: "test-task",
-		ResourceDependencies: []v1alpha1.ResourceDependency{{
-			Name:       "test-input",
-			ProvidedBy: []string{"prev-task"},
-		}},
+		Resources: &v1alpha1.PipelineTaskResources{
+			Inputs: []v1alpha1.PipelineTaskInputResource{{
+				Name: "test-input",
+				From: []string{"prev-task"},
+			}},
+		},
 	}
 
-	resources.WrapSteps(taskRunSpec, pipelineResources, pt)
+	taskRunSpec := &v1alpha1.TaskRunSpec{}
+	resources.WrapSteps(taskRunSpec, pt, inputs, outputs, pvcDir)
 
 	expectedtaskInputResources := []v1alpha1.TaskResourceBinding{{
 		ResourceRef: v1alpha1.PipelineResourceRef{Name: "resource1"},
@@ -186,10 +190,13 @@ func Test_WrapSteps(t *testing.T) {
 		Paths:       []string{"/pvc/test-task/test-output"},
 	}}
 
-	if d := cmp.Diff(taskRunSpec.Inputs.Resources, expectedtaskInputResources); d != "" {
+	sort.SliceStable(expectedtaskInputResources, func(i, j int) bool { return expectedtaskInputResources[i].Name < expectedtaskInputResources[j].Name })
+	sort.SliceStable(expectedtaskOuputResources, func(i, j int) bool { return expectedtaskOuputResources[i].Name < expectedtaskOuputResources[j].Name })
+
+	if d := cmp.Diff(taskRunSpec.Inputs.Resources, expectedtaskInputResources, cmpopts.SortSlices(func(x, y v1alpha1.TaskResourceBinding) bool { return x.Name < y.Name })); d != "" {
 		t.Errorf("error comparing input resources: %s", d)
 	}
-	if d := cmp.Diff(taskRunSpec.Outputs.Resources, expectedtaskOuputResources); d != "" {
+	if d := cmp.Diff(taskRunSpec.Outputs.Resources, expectedtaskOuputResources, cmpopts.SortSlices(func(x, y v1alpha1.TaskResourceBinding) bool { return x.Name < y.Name })); d != "" {
 		t.Errorf("error comparing output resources: %s", d)
 	}
 }

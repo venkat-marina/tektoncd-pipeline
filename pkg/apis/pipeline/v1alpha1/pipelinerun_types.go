@@ -17,12 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"fmt"
+	"time"
 
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	"github.com/knative/pkg/webhook"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -41,29 +40,43 @@ var _ webhook.GenericCRD = (*TaskRun)(nil)
 
 // PipelineRunSpec defines the desired state of PipelineRun
 type PipelineRunSpec struct {
-	PipelineRef           PipelineRef            `json:"pipelineRef"`
-	Trigger               PipelineTrigger        `json:"trigger"`
-	PipelineTaskResources []PipelineTaskResource `json:"resources"`
+	PipelineRef PipelineRef     `json:"pipelineRef"`
+	Trigger     PipelineTrigger `json:"trigger"`
+	// Resources is a list of bindings specifying which actual instances of
+	// PipelineResources to use for the resources the Pipeline has declared
+	// it needs.
+	Resources []PipelineResourceBinding `json:"resources"`
+	// Params is a list of parameter names and values.
+	Params []Param `json:"params"`
 	// +optional
 	ServiceAccount string `json:"serviceAccount"`
 	// +optional
-	Results    *Results `json:"results,omitempty"`
-	Generation int64    `json:"generation,omitempty"`
+	Results *Results `json:"results,omitempty"`
+	// Used for cancelling a pipelinerun (and maybe more later on)
+	// +optional
+	Status PipelineRunSpecStatus
+	// Time after which the Pipeline times out. Defaults to never.
+	// Refer Go's ParseDuration documentation for expected format: https://golang.org/pkg/time/#ParseDuration
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+	// NodeSelector is a selector which must be true for the pod to fit on a node.
+	// Selector which must match a node's labels for the pod to be scheduled on that node.
+	// More info: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// If specified, the pod's scheduling constraints
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 }
 
-// PipelineTaskResource maps Task inputs and outputs to existing PipelineResources by their names.
-type PipelineTaskResource struct {
-	// Name is the name of the `PipelineTask` for which these PipelineResources are being provided.
-	Name string `json:"name"`
+// PipelineRunSpecStatus defines the pipelinerun spec status the user can provide
+type PipelineRunSpecStatus string
 
-	// Inputs is a list containing mapping from the input Resources which the Task has declared it needs
-	// and the corresponding Resource instance in the system which should be used.
-	Inputs []TaskResourceBinding `json:"inputs"`
-
-	// Outputs is a list containing mapping from the output Resources which the Task has declared it needs
-	// and the corresponding Resource instance in the system which should be used.
-	Outputs []TaskResourceBinding `json:"outputs"`
-}
+const (
+	// PipelineRunSpecStatusCancelled indicates that the user wants to cancel the task,
+	// if not already cancelled or terminated
+	PipelineRunSpecStatusCancelled = "PipelineRunCancelled"
+)
 
 // PipelineResourceRef can be used to refer to a specific instance of a Resource
 type PipelineResourceRef struct {
@@ -106,6 +119,12 @@ type PipelineRunStatus struct {
 	// In #107 should be updated to hold the location logs have been uploaded to
 	// +optional
 	Results *Results `json:"results,omitempty"`
+	// StartTime is the time the PipelineRun is actually started.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+	// CompletionTime is the time the PipelineRun completed.
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 	// map of TaskRun Status with the taskRun name as the key
 	//+optional
 	TaskRuns map[string]TaskRunStatus `json:"taskRuns,omitempty"`
@@ -122,6 +141,9 @@ func (pr *PipelineRunStatus) GetCondition(t duckv1alpha1.ConditionType) *duckv1a
 func (pr *PipelineRunStatus) InitializeConditions() {
 	if pr.TaskRuns == nil {
 		pr.TaskRuns = make(map[string]TaskRunStatus)
+	}
+	if pr.StartTime.IsZero() {
+		pr.StartTime = &metav1.Time{time.Now()}
 	}
 	pipelineRunCondSet.Manage(pr).InitializeConditions()
 }
@@ -180,37 +202,9 @@ func (pr *PipelineRun) GetTaskRunRef() corev1.ObjectReference {
 // SetDefaults for pipelinerun
 func (pr *PipelineRun) SetDefaults() {}
 
-// GetPVC gets PVC for
-func (pr *PipelineRun) GetPVC() *corev1.PersistentVolumeClaim {
-	var pvcSizeBytes int64
-	// TODO(shashwathi): make this value configurable
-	pvcSizeBytes = 5 * 1024 * 1024 * 1024 // 5 GBs
-	return &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace:       pr.Namespace,
-			Name:            pr.GetPVCName(),
-			OwnerReferences: pr.GetOwnerReference(),
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			// Multiple tasks should be allowed to read
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.ResourceRequirements{
-				Requests: map[corev1.ResourceName]resource.Quantity{
-					corev1.ResourceStorage: *resource.NewQuantity(pvcSizeBytes, resource.BinarySI),
-				},
-			},
-		},
-	}
-}
-
 // GetOwnerReference gets the pipeline run as owner reference for any related objects
 func (pr *PipelineRun) GetOwnerReference() []metav1.OwnerReference {
 	return []metav1.OwnerReference{
 		*metav1.NewControllerRef(pr, groupVersionKind),
 	}
-}
-
-// GetPVCName provides name of PVC for corresponding PR
-func (pr *PipelineRun) GetPVCName() string {
-	return fmt.Sprintf("%s-pvc", pr.Name)
 }

@@ -3,6 +3,9 @@
 To run tests:
 
 ```shell
+# Land the latest codes
+ko apply -f ./config/
+
 # Unit tests
 go test ./...
 
@@ -18,15 +21,15 @@ Unit tests live side by side with the code they are testing and can be run with:
 go test ./...
 ```
 
-_By default `go test` will not run [the integration tests](#integration-tests),
-which need `-tags=e2e` to be enabled._
+By default `go test` will not run [the end to end tests](#end-to-end-tests),
+which need `-tags=e2e` to be enabled.
 
 ### Unit testing Controllers
 
-Kubernetes client-go provides a number of fake clients and objects for unit
-testing. The ones we will be using are:
+Kubernetes [client-go](https://godoc.org/k8s.io/client-go) provides a number of
+fake clients and objects for unit testing. The ones we are using are:
 
-1. [Fake kubernetes client](https://godoc.org/k8s.io/client-go/kubernetes/fake):
+1. [Fake Kubernetes client](https://godoc.org/k8s.io/client-go/kubernetes/fake):
    Provides a fake REST interface to interact with Kubernetes API
 1. [Fake pipeline client](./../pkg/client/clientset/versioned/fake/clientset_generated.go)
    : Provides a fake REST PipelineClient Interface to interact with Pipeline
@@ -44,75 +47,89 @@ pipelineClient := fakepipelineclientset.NewSimpleClientset()
 
 This
 [pipelineClient](https://github.com/knative/build-pipeline/blob/d97057a58e16c11ca5e38b780a7bb3ddae42bae1/pkg/client/clientset/versioned/clientset.go#L34)
-is initialized with no runtime objects. You can also initialie the client with
-kubernetes objects and can interact with them using the
+is initialized with no runtime objects. You can also initialize the client with
+Kubernetes objects and can interact with them using the
 `pipelineClient.Pipeline()`
 
 ```go
- import (
-     v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
- )
+import (
+    v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
- obj := &v1alpha1.PipelineRun{
-  ObjectMeta: metav1.ObjectMeta{
-    Name:      "name",
-    Namespace: "namespace",
-  },
-  Spec: v1alpha1.PipelineRunSpec{
-    PipelineRef: v1alpha1.PipelineRef{
-      Name:       "test-pipeline",
-      APIVersion: "a1",
+obj := &v1alpha1.PipelineRun {
+    ObjectMeta: metav1.ObjectMeta {
+        Name:      "name",
+        Namespace: "namespace",
     },
-}}
+    Spec: v1alpha1.PipelineRunSpec {
+        PipelineRef: v1alpha1.PipelineRef {
+            Name:       "test-pipeline",
+            APIVersion: "a1",
+        },
+    }
+}
 pipelineClient := fakepipelineclientset.NewSimpleClientset(obj)
 objs := pipelineClient.Pipeline().PipelineRuns("namespace").List(v1.ListOptions{})
-//You can verify if List was called in yout test like this
+// You can verify if List was called in your test like this
 action :=  pipelineClient.Actions()[0]
 if action.GetVerb() != "list" {
     t.Errorf("expected list to be called, found %s", action.GetVerb())
 }
 ```
 
-To test the Controller for crd objects, we need to adding test crd objects to
-the [informers](./../pkg/client/informers) so that the
-[listers](./../pkg/client/listers) can access these.
+To test the Controller of _CRD (CustomResourceDefinitions)_, you need to add the
+CRD to the [informers](./../pkg/client/informers) so that the
+[listers](./../pkg/client/listers) can get the access.
 
-To add test `PipelineRun` objects to the listers, you can
+For example, the following code will test `PipelineRun`
 
 ```go
 pipelineClient := fakepipelineclientset.NewSimpleClientset()
 sharedInfomer := informers.NewSharedInformerFactory(pipelineClient, 0)
 pipelineRunsInformer := sharedInfomer.Pipeline().V1alpha1().PipelineRuns()
 
-obj := &v1alpha1.PipelineRun{
-  ObjectMeta: metav1.ObjectMeta{
-    Name:      "name",
-    Namespace: "namespace",
-  },
-  Spec: v1alpha1.PipelineRunSpec{
-    PipelineRef: v1alpha1.PipelineRef{
-      Name:       "test-pipeline",
-      APIVersion: "a1",
+obj := &v1alpha1.PipelineRun {
+    ObjectMeta: metav1.ObjectMeta {
+        Name:      "name",
+        Namespace: "namespace",
     },
-}}
+    Spec: v1alpha1.PipelineRunSpec {
+        PipelineRef: v1alpha1.PipelineRef {
+            Name:       "test-pipeline",
+            APIVersion: "a1",
+        },
+    }
+}
 pipelineRunsInformer.Informer().GetIndexer().Add(obj)
 ```
 
-## Integration tests
+## End to end tests
 
 ### Setup
 
-As well as requiring the environment variable `KO_DOCKER_REPO` variable, you may
-also require authentication inside the Build to run the Kaniko e2e test. If so,
-setting `KANIKO_SECRET_CONFIG_FILE` to be the path to a GCP service account JSON
-key which has permissions to push to the registry specified in `KO_DOCKER_REPO`
-will enable Kaniko to use those credentials when pushing.
+Besides the environment variable `KO_DOCKER_REPO`, you may also need the
+permissions inside the TaskRun to run the Kaniko e2e test and GCS taskrun test.
 
-To quickly create a service account usable with the e2e tests:
+- In Kaniko e2e test, setting `GCP_SERVICE_ACCOUNT_KEY_PATH` as the path of the
+  GCP service account JSON key which has permissions to push to the registry
+  specified in `KO_DOCKER_REPO` will enable Kaniko to use those credentials when
+  pushing an image.
+- In GCS taskrun test, GCP service account JSON key file at path
+  `GCP_SERVICE_ACCOUNT_KEY_PATH` is used to generate Kubernetes secret to access
+  GCS bucket. This e2e test requires valid service account configuration json
+  but it does not require any role binding.
+- In Storage artifact bucket, setting the `GCP_SERVICE_ACCOUNT_KEY_PATH` as the
+  path of the GCP service account JSON key which has permissions to
+  create/delete a bucket.
 
-```shell
+To reduce e2e test setup developers can use the same environment variable for
+both Kaniko e2e test and GCS taskrun test. To create a service account usable in
+the e2e tests:
+
+```bash
 PROJECT_ID=your-gcp-project
 ACCOUNT_NAME=service-account-name
+# gcloud configure project
 gcloud config set project $PROJECT_ID
 
 # create the service account
@@ -125,13 +142,13 @@ gcloud projects add-iam-policy-binding $PROJECT_ID --member serviceAccount:$EMAI
 # create the JSON key
 gcloud iam service-accounts keys create config.json --iam-account $EMAIL
 
-export KANIKO_SECRET_CONFIG_FILE="$PWD/config.json"
+export GCP_SERVICE_ACCOUNT_KEY_PATH="$PWD/config.json"
 ```
 
 ### Running
 
 Integration tests live in this directory. To run these tests, you must provide
-`go` with `-tags=e2e`. By default the tests run agains your current kubeconfig
+`go` with `-tags=e2e`. By default the tests run against your current kubeconfig
 context, but you can change that and other settings with [the flags](#flags):
 
 ```shell
@@ -152,7 +169,7 @@ You can also use
 - Using [`--logverbose`](#output-verbose-log) to see the verbose log output from
   test as well as from k8s libraries.
 - Using `-count=1` is
-  [the idiomatic way to disable test caching](https://golang.org/doc/go1.10#test)
+  [the idiomatic way to disable test caching](https://golang.org/doc/go1.10#test).
 
 You can [use test flags](#flags) to control the environment your tests run
 against, i.e. override
@@ -164,13 +181,13 @@ go test -v -tags=e2e -count=1 ./test --kubeconfig ~/special/kubeconfig --cluster
 
 Tests importing
 [`github.com/knative/build-pipline/test`](#adding-integration-tests) recognize
-these
-[all flags added by `knative/pkg/test`](https://github.com/knative/pkg/tree/master/test#flags).
+the
+[flags added by `knative/pkg/test`](https://github.com/knative/pkg/tree/master/test#flags).
 
-_Note the environment variable `K8S_CLUSTER_OVERRIDE`, while used by
+Note the environment variable `K8S_CLUSTER_OVERRIDE`, while used by
 [knative/serving](https://github.com/knative/serving) and not by this project,
 will override the cluster used by the integration tests since they use
-[the same libs to get these flags](https://github.com/knative/serving)._
+[the same libs to get these flags](https://github.com/knative/serving).
 
 ### One test case
 
@@ -186,7 +203,7 @@ go test -v -tags=e2e -count=1 ./test -run ^TestTaskRun$
 To run the YAML e2e tests, run the following command:
 
 ```bash
-./test/e2e-yaml-tests.sh
+./test/e2e-tests-yaml.sh
 ```
 
 ### Adding integration tests
@@ -213,6 +230,32 @@ be used to run only [the unit tests](#unit-tests), i.e.:
 // +build e2e
 ```
 
+#### Create build-pipeline objects
+
+To create `build-pipeline` objects (e.g. `Task`, `Pipeline`, …), you can use the
+[`builder`](./builder) package to reduce noise:
+
+```go
+func MyTest(t *testing.T){
+    // Pipeline
+    pipeline := tb.Pipeline("tomatoes", "namespace",
+        tb.PipelineSpec(tb.PipelineTask("foo", "banana")),
+    )
+    // … and PipelineRun
+    pipelineRun := tb.PipelineRun("pear", "namespace",
+        tb.PipelineRunSpec("tomatoes", tb.PipelineRunServiceAccount("inexistent")),
+    )
+    // And do something with them
+    // […]
+    if _, err := c.PipelineClient.Create(pipeline); err != nil {
+        t.Fatalf("Failed to create Pipeline `%s`: %s", "tomatoes", err)
+    }
+    if _, err := c.PipelineRunClient.Create(pipelineRun); err != nil {
+        t.Fatalf("Failed to create PipelineRun `%s`: %s", "pear", err)
+    }
+}
+```
+
 #### Get access to client objects
 
 To initialize client objects use [the command line flags](#use-flags) which
@@ -232,7 +275,6 @@ The `Clients` struct contains initialized clients for accessing:
 
 - Kubernetes objects
 - [`Pipelines`](https://github.com/knative/build-pipeline#pipeline)
-- TODO: incrementally add clients for other types
 
 For example, to create a `Pipeline`:
 
@@ -255,14 +297,14 @@ _See [clients.go](./clients.go)._
 
 #### Generate random names
 
-You can use the function `AppendRandomString` to create random names for `crd`s
+You can use the function `GenerateName()` to append a random string for `crd`s
 or anything else, so that your tests can use unique names each time they run.
 
 ```go
-namespace := test.AppendRandomString('arendelle')
-```
+import "github.com/knative/build-pipeline/pkg/names"
 
-_See [randstring.go](./randstring.go)._
+namespace := names.SimpleNameGenerator.GenerateName("arendelle")
+```
 
 #### Poll Pipeline resources
 
@@ -270,17 +312,16 @@ After creating Pipeline resources or making changes to them, you will need to
 wait for the system to realize those changes. You can use polling methods to
 check the resources reach the desired state.
 
-The `WaitFor*` functions use the kubernetes
-[`wait` package](https://godoc.org/k8s.io/apimachinery/pkg/util/wait). To poll
-they use
+The `WaitFor*` functions use the Kubernetes
+[`wait` package](https://godoc.org/k8s.io/apimachinery/pkg/util/wait). For
+polling they use
 [`PollImmediate`](https://godoc.org/k8s.io/apimachinery/pkg/util/wait#PollImmediate)
-and the return values of the function you provide behave the same as
-[`ConditionFunc`](https://godoc.org/k8s.io/apimachinery/pkg/util/wait#ConditionFunc):
-a `bool` to indicate if the function should stop or continue polling, and an
-`error` to indicate if there has been an error.
+behind the scene. And the callback function is
+[`ConditionFunc`](https://godoc.org/k8s.io/apimachinery/pkg/util/wait#ConditionFunc),
+which returns a `bool` to indicate if the function should stop, and an `error`
+to indicate if there was an error.
 
-For example, you can poll a `TaskRun` object to wait for it to have a
-`Status.Condition`:
+For example, you can poll a `TaskRun` until having a `Status.Condition`:
 
 ```go
 err = WaitForTaskRunState(c, hwTaskRunName, func(tr *v1alpha1.TaskRun) (bool, error) {
@@ -292,7 +333,7 @@ err = WaitForTaskRunState(c, hwTaskRunName, func(tr *v1alpha1.TaskRun) (bool, er
 ```
 
 _[Metrics will be emitted](https://github.com/knative/pkg/tree/master/test#emit-metrics)
-for these `Wait` method tracking how long test poll for._
+for these `Wait` methods tracking how long test poll for._
 
 ## Presubmit tests
 
@@ -316,7 +357,7 @@ via the sections for `knative/build-pipeline`.
 The presubmit integration tests entrypoint will run:
 
 - [The integration tests](#integration-tests)
-- A sanity check deployment of [our example CRDs](../examples)
+- A test of [our example CRDs](../examples/README.md#testing-the-examples)
 
 When run using Prow, integration tests will try to get a new cluster using
 [boskos](https://github.com/kubernetes/test-infra/tree/master/boskos) and

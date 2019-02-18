@@ -29,12 +29,7 @@ header "Setting up environment"
 set +o errexit
 set +o pipefail
 
-echo ">> Deploying Pipeline CRD"
-ko apply -f config/ || fail_test "Build pipeline installation failed"
-
-for res in pipelineresources tasks pipelines taskruns pipelineruns; do
-  kubectl delete --ignore-not-found=true ${res}.pipeline.knative.dev --all
-done
+install_pipeline_crd 
 
 # Run the tests
 failed=0
@@ -44,6 +39,7 @@ for test in taskrun pipelinerun; do
     echo "ERROR: one or more YAML tests failed"
     failed=1
     output_yaml_test_results ${test}
+    output_pods_logs ${test}
   fi
 done
 

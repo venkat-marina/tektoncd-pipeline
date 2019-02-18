@@ -25,15 +25,7 @@ initialize $@
 
 header "Setting up environment"
 
-# Handle failures ourselves, so we can dump useful info.
-set +o errexit
-set +o pipefail
-
-echo ">> Deploying Pipeline CRD"
-ko apply -f config/ || fail_test "Build pipeline installation failed"
-
-# Wait for pods to be running in the namespaces we are deploying to
-wait_until_pods_running knative-build-pipeline || fail_test "Pipeline CRD did not come up"
+install_pipeline_crd
 
 failed=0
 

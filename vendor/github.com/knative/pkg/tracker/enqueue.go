@@ -17,12 +17,17 @@ limitations under the License.
 package tracker
 
 import (
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/knative/pkg/kmeta"
 )
 
 // New returns an implementation of Interface that lets a Reconciler
@@ -61,6 +66,23 @@ type set map[string]time.Time
 
 // Track implements Interface.
 func (i *impl) Track(ref corev1.ObjectReference, obj interface{}) error {
+	invalidFields := map[string][]string{
+		"APIVersion": validation.IsQualifiedName(ref.APIVersion),
+		"Kind":       validation.IsCIdentifier(ref.Kind),
+		"Namespace":  validation.IsDNS1123Label(ref.Namespace),
+		"Name":       validation.IsDNS1123Subdomain(ref.Name),
+	}
+	fieldErrors := []string{}
+	for k, v := range invalidFields {
+		for _, msg := range v {
+			fieldErrors = append(fieldErrors, fmt.Sprintf("%s: %s", k, msg))
+		}
+	}
+	if len(fieldErrors) > 0 {
+		sort.Strings(fieldErrors)
+		return fmt.Errorf("Invalid ObjectReference:\n%s", strings.Join(fieldErrors, "\n"))
+	}
+
 	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 	if err != nil {
 		return err
@@ -76,6 +98,20 @@ func (i *impl) Track(ref corev1.ObjectReference, obj interface{}) error {
 	if !ok {
 		l = set{}
 	}
+	if expiry, ok := l[key]; !ok || isExpired(expiry) {
+		// When covering an uncovered key, immediately call the
+		// registered callback to ensure that the following pattern
+		// doesn't create problems:
+		//    foo, err := lister.Get(key)
+		//    // Later...
+		//    err := tracker.Track(fooRef, parent)
+		// In this example, "Later" represents a window where "foo" may
+		// have changed or been created while the Track is not active.
+		// The simplest way of eliminating such a window is to call the
+		// callback to "catch up" immediately following new
+		// registrations.
+		i.cb(key)
+	}
 	// Overwrite the key with a new expiration.
 	l[key] = time.Now().Add(i.leaseDuration)
 
@@ -83,13 +119,7 @@ func (i *impl) Track(ref corev1.ObjectReference, obj interface{}) error {
 	return nil
 }
 
-type accessor interface {
-	GroupVersionKind() schema.GroupVersionKind
-	GetNamespace() string
-	GetName() string
-}
-
-func objectReference(item accessor) corev1.ObjectReference {
+func objectReference(item kmeta.Accessor) corev1.ObjectReference {
 	gvk := item.GroupVersionKind()
 	apiVersion, kind := gvk.ToAPIVersionAndKind()
 	return corev1.ObjectReference{
@@ -100,10 +130,14 @@ func objectReference(item accessor) corev1.ObjectReference {
 	}
 }
 
+func isExpired(expiry time.Time) bool {
+	return time.Now().After(expiry)
+}
+
 // OnChanged implements Interface.
 func (i *impl) OnChanged(obj interface{}) {
-	item, ok := obj.(accessor)
-	if !ok {
+	item, err := kmeta.DeletionHandlingAccessor(obj)
+	if err != nil {
 		// TODO(mattmoor): We should consider logging here.
 		return
 	}
@@ -122,7 +156,7 @@ func (i *impl) OnChanged(obj interface{}) {
 
 	for key, expiry := range s {
 		// If the expiration has lapsed, then delete the key.
-		if time.Now().After(expiry) {
+		if isExpired(expiry) {
 			delete(s, key)
 			continue
 		}

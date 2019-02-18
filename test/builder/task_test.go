@@ -15,6 +15,7 @@ package builder_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/knative/build-pipeline/pkg/apis/pipeline/v1alpha1"
@@ -37,13 +38,16 @@ var (
 func TestTask(t *testing.T) {
 	task := tb.Task("test-task", "foo", tb.TaskSpec(
 		tb.TaskInputs(
-			tb.InputsResource("workspace", v1alpha1.PipelineResourceTypeGit),
+			tb.InputsResource("workspace", v1alpha1.PipelineResourceTypeGit, tb.ResourceTargetPath("/foo/bar")),
 			tb.InputsParam("param", tb.ParamDescription("mydesc"), tb.ParamDefault("default")),
 		),
 		tb.TaskOutputs(tb.OutputsResource("myotherimage", v1alpha1.PipelineResourceTypeImage)),
 		tb.Step("mycontainer", "myimage", tb.Command("/mycmd"), tb.Args(
 			"--my-other-arg=${inputs.resources.workspace.url}",
 		)),
+		tb.TaskVolume("foo", tb.VolumeSource(corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{Path: "/foo/bar"},
+		})),
 	))
 	expectedTask := &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-task", Namespace: "foo"},
@@ -56,8 +60,9 @@ func TestTask(t *testing.T) {
 			}},
 			Inputs: &v1alpha1.Inputs{
 				Resources: []v1alpha1.TaskResource{{
-					Name: "workspace",
-					Type: v1alpha1.PipelineResourceTypeGit,
+					Name:       "workspace",
+					Type:       v1alpha1.PipelineResourceTypeGit,
+					TargetPath: "/foo/bar",
 				}},
 				Params: []v1alpha1.TaskParam{{Name: "param", Description: "mydesc", Default: "default"}},
 			},
@@ -67,6 +72,12 @@ func TestTask(t *testing.T) {
 					Type: v1alpha1.PipelineResourceTypeImage,
 				}},
 			},
+			Volumes: []corev1.Volume{{
+				Name: "foo",
+				VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{Path: "/foo/bar"},
+				},
+			}},
 		},
 	}
 	if d := cmp.Diff(expectedTask, task); d != "" {
@@ -111,18 +122,19 @@ func TestTaskRunWitTaskRef(t *testing.T) {
 			),
 			tb.TaskRunInputs(
 				tb.TaskRunInputsResource(gitResource.Name,
-					tb.ResourceBindingRef("my-git"),
-					tb.ResourceBindingPaths("source-folder"),
-					tb.ResourceBindingRefAPIVersion("a1"),
+					tb.TaskResourceBindingRef("my-git"),
+					tb.TaskResourceBindingPaths("source-folder"),
+					tb.TaskResourceBindingRefAPIVersion("a1"),
 				),
 				tb.TaskRunInputsResource(anotherGitResource.Name,
-					tb.ResourceBindingPaths("source-folder"),
+					tb.TaskResourceBindingPaths("source-folder"),
+					tb.TaskResourceBindingResourceSpec(&v1alpha1.PipelineResourceSpec{Type: v1alpha1.PipelineResourceTypeCluster}),
 				),
 				tb.TaskRunInputsParam("iparam", "ivalue"),
 			),
 			tb.TaskRunOutputs(
 				tb.TaskRunOutputsResource(gitResource.Name,
-					tb.ResourceBindingPaths("output-folder"),
+					tb.TaskResourceBindingPaths("output-folder"),
 				),
 			),
 		),
@@ -154,11 +166,9 @@ func TestTaskRunWitTaskRef(t *testing.T) {
 					},
 					Paths: []string{"source-folder"},
 				}, {
-					Name: "another-git-resource",
-					ResourceRef: v1alpha1.PipelineResourceRef{
-						Name: "another-git-resource",
-					},
-					Paths: []string{"source-folder"},
+					Name:         "another-git-resource",
+					ResourceSpec: &v1alpha1.PipelineResourceSpec{Type: v1alpha1.PipelineResourceType("cluster")},
+					Paths:        []string{"source-folder"},
 				}},
 				Params: []v1alpha1.Param{{Name: "iparam", Value: "ivalue"}},
 			},
@@ -197,6 +207,7 @@ func TestTaskRunWithTaskSpec(t *testing.T) {
 		),
 		tb.TaskTrigger("mytrigger", v1alpha1.TaskTriggerTypeManual),
 		tb.TaskRunServiceAccount("sa"),
+		tb.TaskRunTimeout(2*time.Minute),
 	))
 	expectedTaskRun := &v1alpha1.TaskRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -215,6 +226,7 @@ func TestTaskRunWithTaskSpec(t *testing.T) {
 				Type: v1alpha1.TaskTriggerTypeManual,
 			},
 			ServiceAccount: "sa",
+			Timeout:        &metav1.Duration{Duration: 2 * time.Minute},
 		},
 	}
 	if d := cmp.Diff(expectedTaskRun, taskRun); d != "" {
@@ -228,6 +240,7 @@ func TestResolvedTaskResources(t *testing.T) {
 			tb.Step("step", "image", tb.Command("/mycmd")),
 		),
 		tb.ResolvedTaskResourcesInputs("foo", tb.PipelineResource("bar", "baz")),
+		tb.ResolvedTaskResourcesOutputs("qux", tb.PipelineResource("quux", "quuz")),
 	)
 	expectedResolvedTaskResources := &resources.ResolvedTaskResources{
 		TaskSpec: &v1alpha1.TaskSpec{
@@ -242,6 +255,14 @@ func TestResolvedTaskResources(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "bar",
 					Namespace: "baz",
+				},
+			},
+		},
+		Outputs: map[string]*v1alpha1.PipelineResource{
+			"qux": {
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "quux",
+					Namespace: "quuz",
 				},
 			},
 		},

@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/knative/build-pipeline/pkg/reconciler/v1alpha1/templating"
 	"github.com/knative/pkg/apis"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -76,7 +78,84 @@ func (ts *TaskSpec) Validate() *apis.FieldError {
 			}
 		}
 	}
+
+	if err := validateInputParameterVariables(ts.Steps, ts.Inputs); err != nil {
+		return err
+	}
+	if err := validateResourceVariables(ts.Steps, ts.Inputs, ts.Outputs); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateInputParameterVariables(steps []corev1.Container, inputs *Inputs) *apis.FieldError {
+	parameterNames := map[string]struct{}{}
+	if inputs != nil {
+		for _, p := range inputs.Params {
+			parameterNames[p.Name] = struct{}{}
+		}
+	}
+	return validateVariables(steps, "params", parameterNames)
+}
+
+func validateResourceVariables(steps []corev1.Container, inputs *Inputs, outputs *Outputs) *apis.FieldError {
+	resourceNames := map[string]struct{}{}
+	if inputs != nil {
+		for _, r := range inputs.Resources {
+			resourceNames[r.Name] = struct{}{}
+		}
+	}
+	if outputs != nil {
+		for _, r := range outputs.Resources {
+			resourceNames[r.Name] = struct{}{}
+		}
+	}
+	return validateVariables(steps, "resources", resourceNames)
+}
+
+func validateVariables(steps []corev1.Container, prefix string, vars map[string]struct{}) *apis.FieldError {
+	for _, step := range steps {
+		if err := validateTaskVariable("name", step.Name, prefix, vars); err != nil {
+			return err
+		}
+		if err := validateTaskVariable("image", step.Image, prefix, vars); err != nil {
+			return err
+		}
+		if err := validateTaskVariable("workingDir", step.WorkingDir, prefix, vars); err != nil {
+			return err
+		}
+		for i, cmd := range step.Command {
+			if err := validateTaskVariable(fmt.Sprintf("command[%d]", i), cmd, prefix, vars); err != nil {
+				return err
+			}
+		}
+		for i, arg := range step.Args {
+			if err := validateTaskVariable(fmt.Sprintf("arg[%d]", i), arg, prefix, vars); err != nil {
+				return err
+			}
+		}
+		for _, env := range step.Env {
+			if err := validateTaskVariable(fmt.Sprintf("env[%s]", env.Name), env.Value, prefix, vars); err != nil {
+				return err
+			}
+		}
+		for i, v := range step.VolumeMounts {
+			if err := validateTaskVariable(fmt.Sprintf("volumeMount[%d].Name", i), v.Name, prefix, vars); err != nil {
+				return err
+			}
+			if err := validateTaskVariable(fmt.Sprintf("volumeMount[%d].MountPath", i), v.MountPath, prefix, vars); err != nil {
+				return err
+			}
+			if err := validateTaskVariable(fmt.Sprintf("volumeMount[%d].SubPath", i), v.SubPath, prefix, vars); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateTaskVariable(name, value, prefix string, vars map[string]struct{}) *apis.FieldError {
+	return templating.ValidateVariable(name, value, prefix, "(?:inputs|outputs).", "step", "taskspec.steps", vars)
 }
 
 func checkForDuplicates(resources []TaskResource, path string) *apis.FieldError {

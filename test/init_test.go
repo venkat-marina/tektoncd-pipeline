@@ -27,6 +27,7 @@ import (
 
 	"github.com/ghodss/yaml"
 
+	"github.com/knative/build-pipeline/pkg/names"
 	knativetest "github.com/knative/pkg/test"
 	"github.com/knative/pkg/test/logging"
 	corev1 "k8s.io/api/core/v1"
@@ -52,7 +53,7 @@ func getContextLogger(n string) *logging.BaseLogger {
 
 func setup(t *testing.T, logger *logging.BaseLogger) (*clients, string) {
 	t.Helper()
-	namespace := AppendRandomString("arendelle")
+	namespace := names.SimpleNameGenerator.GenerateName("arendelle")
 
 	c := newClients(t, knativetest.Flags.Kubeconfig, knativetest.Flags.Cluster, namespace)
 	createNamespace(namespace, logger, c.KubeClient)
@@ -77,7 +78,7 @@ func tearDown(t *testing.T, logger *logging.BaseLogger, cs *clients, namespace s
 	}
 	if t.Failed() {
 		header(logger, fmt.Sprintf("Dumping objects from %s", namespace))
-		bs, err := getCRDYaml(cs)
+		bs, err := getCRDYaml(cs, namespace)
 		if err != nil {
 			logger.Error(err)
 		} else {
@@ -122,7 +123,7 @@ func TestMain(m *testing.M) {
 	os.Exit(c)
 }
 
-func getCRDYaml(cs *clients) ([]byte, error) {
+func getCRDYaml(cs *clients, ns string) ([]byte, error) {
 	var output []byte
 	printOrAdd := func(kind, name string, i interface{}) {
 		bs, err := yaml.Marshal(i)
@@ -135,7 +136,7 @@ func getCRDYaml(cs *clients) ([]byte, error) {
 
 	ps, err := cs.PipelineClient.List(metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not get pipeline %s", err)
 	}
 	for _, i := range ps.Items {
 		printOrAdd("Pipeline", i.Name, i)
@@ -143,7 +144,7 @@ func getCRDYaml(cs *clients) ([]byte, error) {
 
 	prs, err := cs.PipelineResourceClient.List(metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not get pipelinerun resource %s", err)
 	}
 	for _, i := range prs.Items {
 		printOrAdd("PipelineResource", i.Name, i)
@@ -151,7 +152,7 @@ func getCRDYaml(cs *clients) ([]byte, error) {
 
 	prrs, err := cs.PipelineRunClient.List(metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not get pipelinerun %s", err)
 	}
 	for _, i := range prrs.Items {
 		printOrAdd("PipelineRun", i.Name, i)
@@ -159,17 +160,26 @@ func getCRDYaml(cs *clients) ([]byte, error) {
 
 	ts, err := cs.TaskClient.List(metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not get tasks %s", err)
 	}
 	for _, i := range ts.Items {
 		printOrAdd("Task", i.Name, i)
 	}
 	trs, err := cs.TaskRunClient.List(metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not get taskrun %s", err)
 	}
 	for _, i := range trs.Items {
 		printOrAdd("TaskRun", i.Name, i)
 	}
+
+	pods, err := cs.KubeClient.Kube.CoreV1().Pods(ns).List(metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("could not get pods %s", err)
+	}
+	for _, i := range pods.Items {
+		printOrAdd("Pod", i.Name, i)
+	}
+
 	return output, nil
 }
