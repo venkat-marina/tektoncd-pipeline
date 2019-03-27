@@ -48,11 +48,8 @@ You must install these tools:
 1. [`git`](https://help.github.com/articles/set-up-git/): For source control
 1. [`dep`](https://github.com/golang/dep): For managing external Go
    dependencies. - Please Install dep v0.5.0 or greater.
-1. [`ko`](https://github.com/google/go-containerregistry/tree/master/cmd/ko):
-   For development. A recent version of `ko` (after the 23th of
-   February, see
-   [google/go-containerregistry#380](https://github.com/google/go-containerregistry/pull/380))
-   is required for `pipeline` to work correctly.   
+1. [`ko`](https://github.com/google/ko): For development. `ko` version v0.1 or
+   higher is required for `pipeline` to work correctly.
 1. [`kubectl`](https://kubernetes.io/docs/tasks/tools/install-kubectl/): For
    interacting with your kube cluster
 
@@ -67,10 +64,10 @@ developing and running Pipelines. Your Kubernetes version must be 1.11 or later.
 
 To setup a cluster with GKE:
 
-1. [Install required tools and setup GCP project](https://github.com/knative/docs/blob/master/install/Knative-with-GKE.md#before-you-begin)
+1. [Install required tools and setup GCP project](https://github.com/knative/docs/blob/master/docs/install/Knative-with-GKE.md#before-you-begin)
    (You may find it useful to save the ID of the project in an environment
    variable (e.g. `PROJECT_ID`).
-1. [Create a GKE cluster](https://github.com/knative/docs/blob/master/install/Knative-with-GKE.md#creating-a-kubernetes-cluster)
+1. [Create a GKE cluster](https://github.com/knative/docs/blob/master/docs/install/Knative-with-GKE.md#creating-a-kubernetes-cluster)
 
 Note that
 [the `--scopes` argument to `gcloud container cluster create`](https://cloud.google.com/sdk/gcloud/reference/container/clusters/create#--scopes)

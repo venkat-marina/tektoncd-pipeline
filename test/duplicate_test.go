@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	knativetest "github.com/knative/pkg/test"
-	"github.com/knative/pkg/test/logging"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/tektoncd/pipeline/pkg/apis/pipeline"
@@ -30,18 +29,17 @@ import (
 
 // TestDuplicatePodTaskRun creates 10 builds and checks that each of them has only one build pod.
 func TestDuplicatePodTaskRun(t *testing.T) {
-	logger := logging.GetContextLogger(t.Name())
-	c, namespace := setup(t, logger)
+	c, namespace := setup(t)
 	t.Parallel()
 
-	knativetest.CleanupOnInterrupt(func() { tearDown(t, logger, c, namespace) }, logger)
-	defer tearDown(t, logger, c, namespace)
+	knativetest.CleanupOnInterrupt(func() { tearDown(t, c, namespace) }, t.Logf)
+	defer tearDown(t, c, namespace)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
 		taskrunName := fmt.Sprintf("duplicate-pod-taskrun-%d", i)
-		logger.Infof("Creating taskrun %q.", taskrunName)
+		t.Logf("Creating taskrun %q.", taskrunName)
 
 		taskrun := tb.TaskRun(taskrunName, namespace, tb.TaskRunSpec(
 			tb.TaskRunTaskSpec(tb.Step("echo", "busybox",
@@ -56,17 +54,20 @@ func TestDuplicatePodTaskRun(t *testing.T) {
 			defer wg.Done()
 
 			if err := WaitForTaskRunState(c, taskrunName, TaskRunSucceed(taskrunName), "TaskRunDuplicatePodTaskRunFailed"); err != nil {
-				t.Fatalf("Error waiting for TaskRun to finish: %s", err)
+				t.Errorf("Error waiting for TaskRun to finish: %s", err)
+				return
 			}
 
 			pods, err := c.KubeClient.Kube.CoreV1().Pods(namespace).List(metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("%s=%s", pipeline.GroupName+pipeline.TaskRunLabelKey, taskrunName),
 			})
 			if err != nil {
-				t.Fatalf("Error getting TaskRun pod list: %v", err)
+				t.Errorf("Error getting TaskRun pod list: %v", err)
+				return
 			}
 			if n := len(pods.Items); n != 1 {
-				t.Fatalf("Error matching the number of build pods: expecting 1 pod, got %d", n)
+				t.Errorf("Error matching the number of build pods: expecting 1 pod, got %d", n)
+				return
 			}
 		}(t)
 	}

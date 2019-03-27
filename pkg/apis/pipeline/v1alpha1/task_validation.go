@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -27,20 +28,25 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-func (t *Task) Validate() *apis.FieldError {
+func (t *Task) Validate(ctx context.Context) *apis.FieldError {
 	if err := validateObjectMetadata(t.GetObjectMeta()); err != nil {
 		return err.ViaField("metadata")
 	}
-	return t.Spec.Validate()
+	return t.Spec.Validate(ctx)
 }
 
-func (ts *TaskSpec) Validate() *apis.FieldError {
+func (ts *TaskSpec) Validate(ctx context.Context) *apis.FieldError {
 	if equality.Semantic.DeepEqual(ts, &TaskSpec{}) {
 		return apis.ErrMissingField(apis.CurrentField)
 	}
 
-	// A Task must have a valid BuildSpec.
-	if err := ts.GetBuildSpec().Validate(); err != nil {
+	if len(ts.Steps) == 0 {
+		return apis.ErrMissingField("steps")
+	}
+	if err := ValidateVolumes(ts.Volumes).ViaField("volumes"); err != nil {
+		return err
+	}
+	if err := validateSteps(ts.Steps).ViaField("steps"); err != nil {
 		return err
 	}
 
@@ -84,6 +90,37 @@ func (ts *TaskSpec) Validate() *apis.FieldError {
 	}
 	if err := validateResourceVariables(ts.Steps, ts.Inputs, ts.Outputs); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ValidateVolumes(volumes []corev1.Volume) *apis.FieldError {
+	// Task must not have duplicate volume names.
+	vols := map[string]struct{}{}
+	for _, v := range volumes {
+		if _, ok := vols[v.Name]; ok {
+			return apis.ErrMultipleOneOf("name")
+		}
+		vols[v.Name] = struct{}{}
+	}
+	return nil
+}
+
+func validateSteps(steps []corev1.Container) *apis.FieldError {
+	// Task must not have duplicate step names.
+	names := map[string]struct{}{}
+	for _, s := range steps {
+		if s.Image == "" {
+			return apis.ErrMissingField("Image")
+		}
+
+		if s.Name == "" {
+			continue
+		}
+		if _, ok := names[s.Name]; ok {
+			return apis.ErrInvalidValue(s.Name, "name")
+		}
+		names[s.Name] = struct{}{}
 	}
 	return nil
 }

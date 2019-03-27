@@ -34,6 +34,8 @@ The current process would look something like:
 1. Update the backups with the new spec
 1. Deploy the updated backups
 
+TODO(bobcatfish): This policy really _should_ include the entire API.
+
 _This policy does not yet cover other functionality which could be considered
 part of the API, but isn’t part of the CRD definition (e.g. a contract re. files
 expected to be written in certain locations by a resulting pod)._
@@ -41,8 +43,8 @@ expected to be written in certain locations by a resulting pod)._
 ## `Build` and `BuildTemplate`
 
 The CRD types
-[`Build`](https://github.com/knative/docs/blob/master/build/builds.md) and
-[`BuildTemplate`](https://github.com/knative/docs/blob/master/build/build-templates.md)
+[`Build`](https://github.com/knative/docs/blob/master/docs/build/builds.md) and
+[`BuildTemplate`](https://github.com/knative/docs/blob/master/docs/build/build-templates.md)
 should be considered frozen at beta and only additive changes should be allowed.
 
 Support will continue for the `Build` type for the foreseeable future,

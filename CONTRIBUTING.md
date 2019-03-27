@@ -10,7 +10,9 @@ To get started developing, see our [DEVELOPMENT.md](./DEVELOPMENT.md).
 
 In this file you'll find info on:
 
+- [Contacting other contributors](#contact)
 - [Principles](#principles)
+- [Proposing features](#proposing-features)
 - [Development process](#development-process)
 - [The pull request process](#pull-request-process) and
   [Prow commands](#prow-commands)
@@ -19,10 +21,21 @@ In this file you'll find info on:
 - [Finding something to work on](#finding-something-to-work-on)
 - [The roadmap](#roadmap)
 - [API compatibility policy](#api-compatibility-policy)
-- [Contacting other contributors](#contact)
 
 _See also
 [the contribution guidelines for Knative](https://github.com/knative/docs/blob/master/community/CONTRIBUTING.md)._
+
+## Contact
+
+This work is being done by the Tekton Pipeline working group. If you are
+interested please join our meetings
+[at 9am PST on Tuesdays](https://calendar.google.com/event?action=TEMPLATE&tmeid=amZyNTljOWpkZWdibmpsY3JlazNodDU5NWdfMjAxOTAzMjZUMTYwMDAwWiBnb29nbGUuY29tX2Qzb3Zjdm8xcDMyMTloOTg5NTczdjk4Zm5zQGc&tmsrc=google.com_d3ovcvo1p3219h989573v98fns%40group.calendar.google.com&scp=ALL)
+and or in slack at
+[`#build-pipeline`](https://knative.slack.com/messages/build-pipeline)!
+
+All docs shared with this group are made visible to members of
+[tekton-dev@](https://groups.google.com/forum/#!forum/tekton-dev), please join
+if you are interested!
 
 ## Principles
 
@@ -43,6 +56,39 @@ This means that most PRs should include both:
   explaining features being added, including updates to
   [DEVELOPMENT.md](./DEVELOPMENT.md) if required
 
+## Proposing features
+
+If you have an idea for a feature, or if you have a solution for an existing
+issue that involves an API change (i.e. changes
+[the structure of a CRD](api_compatibility_policy.md#what-does-compatibility-mean-here)),
+we highly suggest that you propose the changes before implementing them.
+
+This is for two main reasons:
+
+1. [Yes is forever](https://twitter.com/solomonstre/status/715277134978113536)
+2. It's easier/cheaper to make changes before implementation (and you'll feel
+   less emotionally invested!)
+
+Some suggestions for how to do this:
+
+1. Write up a design doc and share it with
+   [tekton-dev@](https://groups.google.com/forum/#!forum/tekton-dev)
+2. Bring your design/ideas to [our working group meetings](#contact) for
+   discussion
+
+A great proposal will include:
+
+- **The use case(s) it solves** Who needs this and why?
+- **Requirements** What needs to be true about the solution?
+- **2+ alternative proposals** Even if alternatives aren't obvious, forcing
+  yourself to brainstorm a couple more approaches may give you new ideas or make
+  clear that your initial proposal is the best one
+
+Also feel free to reach out to us on [slack](#contact) if you want any
+help/guidance.
+
+Thanks so much!!
+
 ## Development Process
 
 Our contributors are made up of:
@@ -52,8 +98,8 @@ Our contributors are made up of:
 - Any and all other contributors!
 
 If you are interested in becoming an OWNER, take a look at the
-[approver requirements](https://github.com/knative/docs/blob/master/community/ROLES.md#approver)
-and follow up with an existing OWNER [on slack](https://knative.slack.com/)).
+[approver requirements](https://github.com/knative/docs/blob/master/contributing/ROLES.md#approver)
+and follow up with an existing OWNER [on slack](#contact).
 
 ### OWNER review process
 
@@ -80,7 +126,8 @@ You can see more details (including a burndown, issues in epics, etc.) on our
 [zenhub board](https://app.zenhub.com/workspaces/pipelines-5bc61a054b5806bc2bed4fb2/boards?repos=146641150).
 To see this board, you must:
 
-- Ask [an OWNER](OWNERS) via [slack](https://knative.slack.com) for an invitation
+- Ask [an OWNER](OWNERS) via [slack](https://knative.slack.com) for an
+  invitation
 - Add [the zenhub browser extension](https://www.zenhub.com/extension) to see
   new info via GitHub (or just use zenhub.com directly)
 
@@ -99,9 +146,7 @@ _See also
 
 ### Prow configuration
 
-Prow is configured in
-[the knative `config.yaml` in `knative/test-infra`](https://github.com/knative/test-infra/blob/master/ci/prow/config.yaml)
-via the sections for `tektoncd/pipeline`.
+See [infra/README.md](./infra/README.md).
 
 ### Prow commands
 
@@ -118,8 +163,8 @@ Before a PR can be merged, it must have both `/lgtm` AND `/approve`:
 - `/approve` can be added only by
   [OWNERS](https://github.com/tektoncd/pipeline/blob/master/OWNERS)
 
-[OWNERS](https://github.com/tektoncd/pipeline/blob/master/OWNERS)
-automatically get `/approve` but still will need an `/lgtm` to merge.
+[OWNERS](https://github.com/tektoncd/pipeline/blob/master/OWNERS) automatically
+get `/approve` but still will need an `/lgtm` to merge.
 
 The merge will happen automatically once the PR has both `/lgtm` and `/approve`,
 and all tests pass. If you don't want this to happen you should
@@ -224,14 +269,3 @@ The project's roadmap for 2019 is published [here](./roadmap-2019.md).
 
 The API compatibility policy (i.e. the policy for making backwards incompatible
 API changes) can be found [here](api_compatibility_policy.md).
-
-## Contact
-
-This work is being done by
-[the Build CRD working group](https://github.com/knative/docs/blob/master/community/WORKING-GROUPS.md#build).
-If you are interested please join our meetings and or in slack at
-[`#build-pipeline`](https://knative.slack.com/messages/build-pipeline)!
-
-All docs shared with this group are made visible to members of
-[knative-dev@](https://groups.google.com/forum/#!forum/knative-dev), please join
-if you are interested!

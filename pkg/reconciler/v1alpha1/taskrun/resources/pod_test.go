@@ -28,17 +28,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	fakek8s "k8s.io/client-go/kubernetes/fake"
 
-	v1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
-	"github.com/knative/build/pkg/system"
-	"github.com/knative/pkg/apis"
-	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
+	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1alpha1"
 	"github.com/tektoncd/pipeline/test/names"
 )
 
 var (
 	ignorePrivateResourceFields = cmpopts.IgnoreUnexported(resource.Quantity{})
-	ignoreVolatileTime          = cmp.Comparer(func(_, _ apis.VolatileTime) bool { return true })
-	ignoreVolatileTimePtr       = cmp.Comparer(func(_, _ *apis.VolatileTime) bool { return true })
 	nopContainer                = corev1.Container{
 		Name:    "nop",
 		Image:   *nopImage,
@@ -76,13 +71,14 @@ func TestMakePod(t *testing.T) {
 
 	for _, c := range []struct {
 		desc         string
-		b            v1alpha1.BuildSpec
+		trs          v1alpha1.TaskRunSpec
+		ts           v1alpha1.TaskSpec
 		bAnnotations map[string]string
 		want         *corev1.PodSpec
 		wantErr      error
 	}{{
 		desc: "simple",
-		b: v1alpha1.BuildSpec{
+		ts: v1alpha1.TaskSpec{
 			Steps: []corev1.Container{{
 				Name:  "name",
 				Image: "image",
@@ -114,48 +110,15 @@ func TestMakePod(t *testing.T) {
 			Volumes: implicitVolumes,
 		},
 	}, {
-		desc: "gcs-source-with-targetPath",
-		b: v1alpha1.BuildSpec{
-			Source: &v1alpha1.SourceSpec{
-				Name: "gcs-foo-bar",
-				GCS: &v1alpha1.GCSSourceSpec{
-					Type:     v1alpha1.GCSManifest,
-					Location: "gs://foo/bar",
-				},
-				TargetPath: "path/foo",
-			},
-		},
-		want: &corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			InitContainers: []corev1.Container{{
-				Name:         containerPrefix + credsInit + "-9l9zj",
-				Image:        *credsImage,
-				Command:      []string{"/ko-app/creds-init"},
-				Args:         []string{},
-				Env:          implicitEnvVars,
-				VolumeMounts: implicitVolumeMounts, // without subpath
-				WorkingDir:   workspaceDir,
-			}},
-			Containers: []corev1.Container{{
-				Name:         containerPrefix + gcsSource + "-gcs-foo-bar" + "-mz4c7",
-				Image:        *gcsFetcherImage,
-				Args:         []string{"--type", "Manifest", "--location", "gs://foo/bar", "--dest_dir", "/workspace/path/foo"},
-				Env:          implicitEnvVars,
-				VolumeMounts: implicitVolumeMounts, // without subpath
-				WorkingDir:   workspaceDir,
-			},
-				nopContainer,
-			},
-			Volumes: implicitVolumes,
-		},
-	}, {
 		desc: "with-service-account",
-		b: v1alpha1.BuildSpec{
-			ServiceAccountName: "service-account",
+		ts: v1alpha1.TaskSpec{
 			Steps: []corev1.Container{{
 				Name:  "name",
 				Image: "image",
 			}},
+		},
+		trs: v1alpha1.TaskRunSpec{
+			ServiceAccount: "service-account",
 		},
 		want: &corev1.PodSpec{
 			ServiceAccountName: "service-account",
@@ -187,7 +150,7 @@ func TestMakePod(t *testing.T) {
 		},
 	}, {
 		desc: "very-long-step-name",
-		b: v1alpha1.BuildSpec{
+		ts: v1alpha1.TaskSpec{
 			Steps: []corev1.Container{{
 				Name:  "a-very-long-character-step-name-to-trigger-max-len----and-invalid-characters",
 				Image: "image",
@@ -220,7 +183,7 @@ func TestMakePod(t *testing.T) {
 		},
 	}, {
 		desc: "step-name-ends-with-non-alphanumeric",
-		b: v1alpha1.BuildSpec{
+		ts: v1alpha1.TaskSpec{
 			Steps: []corev1.Container{{
 				Name:  "ends-with-invalid-%%__$$",
 				Image: "image",
@@ -276,20 +239,20 @@ func TestMakePod(t *testing.T) {
 					},
 				},
 			)
-			b := &v1alpha1.Build{
+			tr := &v1alpha1.TaskRun{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:        "build-name",
+					Name:        "taskrun-name",
 					Annotations: c.bAnnotations,
 				},
-				Spec: c.b,
+				Spec: c.trs,
 			}
-			got, err := MakePod(b, cs)
+			got, err := MakePod(tr, c.ts, cs)
 			if err != c.wantErr {
 				t.Fatalf("MakePod: %v", err)
 			}
 
 			// Generated name from hexlifying a stream of 'a's.
-			wantName := "build-name-pod-616161"
+			wantName := "taskrun-name-pod-616161"
 			if got.Name != wantName {
 				t.Errorf("Pod name got %q, want %q", got.Name, wantName)
 			}
@@ -306,283 +269,6 @@ func TestMakePod(t *testing.T) {
 			}
 			if d := cmp.Diff(got.Annotations, wantAnnotations); d != "" {
 				t.Errorf("Diff annotations:\n%s", d)
-			}
-		})
-	}
-}
-
-func TestBuildStatusFromPod(t *testing.T) {
-	for _, c := range []struct {
-		desc      string
-		podStatus corev1.PodStatus
-		buildSpec v1alpha1.BuildSpec
-		want      v1alpha1.BuildStatus
-	}{{
-		desc:      "empty",
-		podStatus: corev1.PodStatus{},
-		buildSpec: v1alpha1.BuildSpec{},
-		want:      v1alpha1.BuildStatus{},
-	}, {
-		desc: "ignore-creds-init",
-		podStatus: corev1.PodStatus{
-			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init; ignored
-			}, {
-				Name: "state-name",
-				State: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode: 123,
-					},
-				},
-			}},
-		},
-		buildSpec: v1alpha1.BuildSpec{
-			// no sources.
-		},
-		want: v1alpha1.BuildStatus{
-			StepsCompleted: []string{"state-name"},
-			StepStates: []corev1.ContainerState{{
-				Terminated: &corev1.ContainerStateTerminated{
-					ExitCode: 123,
-				},
-			}},
-		},
-	}, {
-		desc: "ignore-creds-init-and-source",
-		podStatus: corev1.PodStatus{
-			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init; ignored.
-			}, {
-				// git-init; ignored.
-			}, {
-				Name: "state-name",
-				State: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode: 123,
-					},
-				},
-			}},
-		},
-		buildSpec: v1alpha1.BuildSpec{
-			Source: &v1alpha1.SourceSpec{
-				Git: &v1alpha1.GitSourceSpec{
-					Url:      "example.com",
-					Revision: "master",
-				},
-			},
-		},
-		want: v1alpha1.BuildStatus{
-			StepsCompleted: []string{"state-name"},
-			StepStates: []corev1.ContainerState{{
-				Terminated: &corev1.ContainerStateTerminated{
-					ExitCode: 123,
-				},
-			}},
-		},
-	}, {
-		desc: "ignore-creds-init-and-multiple-sources",
-		podStatus: corev1.PodStatus{
-			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init; ignored.
-			}, {
-				// first git-init; ignored.
-			}, {
-				// second git-init; ignored.
-			}, {
-				Name: "state-name",
-				State: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode: 123,
-					},
-				},
-			}},
-		},
-		buildSpec: v1alpha1.BuildSpec{
-			Sources: []v1alpha1.SourceSpec{{
-				Git: &v1alpha1.GitSourceSpec{
-					Url:      "example.com",
-					Revision: "master",
-				},
-			}, {
-				Git: &v1alpha1.GitSourceSpec{
-					Url:      "yahoo.com",
-					Revision: "so cool",
-				},
-			}},
-		},
-		want: v1alpha1.BuildStatus{
-			StepsCompleted: []string{"state-name"},
-			StepStates: []corev1.ContainerState{{
-				Terminated: &corev1.ContainerStateTerminated{
-					ExitCode: 123,
-				},
-			}},
-		},
-	}, {
-		desc:      "success",
-		podStatus: corev1.PodStatus{Phase: corev1.PodSucceeded},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:   v1alpha1.BuildSucceeded,
-				Status: corev1.ConditionTrue,
-			}},
-		},
-	}, {
-		desc:      "running",
-		podStatus: corev1.PodStatus{Phase: corev1.PodRunning},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:   v1alpha1.BuildSucceeded,
-				Status: corev1.ConditionUnknown,
-				Reason: "Building",
-			}},
-		},
-	}, {
-		desc: "failure-terminated",
-		podStatus: corev1.PodStatus{
-			Phase: corev1.PodFailed,
-			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init status; ignored
-			}, {
-				Name:    "status-name",
-				ImageID: "image-id",
-				State: corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode: 123,
-					},
-				},
-			}},
-		},
-		want: v1alpha1.BuildStatus{
-			StepsCompleted: []string{"status-name"},
-			StepStates: []corev1.ContainerState{{
-				Terminated: &corev1.ContainerStateTerminated{
-					ExitCode: 123,
-				},
-			}},
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionFalse,
-				Message: `build step "status-name" exited with code 123 (image: "image-id"); for logs run: kubectl -n knative-build logs pod -c status-name`,
-			}},
-		},
-	}, {
-		desc: "failure-message",
-		podStatus: corev1.PodStatus{
-			Phase:   corev1.PodFailed,
-			Message: "boom",
-		},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionFalse,
-				Message: "boom",
-			}},
-		},
-	}, {
-		desc:      "failure-unspecified",
-		podStatus: corev1.PodStatus{Phase: corev1.PodFailed},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionFalse,
-				Message: "build failed for unspecified reasons.",
-			}},
-		},
-	}, {
-		desc: "pending-waiting-message",
-		podStatus: corev1.PodStatus{
-			Phase: corev1.PodPending,
-			InitContainerStatuses: []corev1.ContainerStatus{{
-				// creds-init status; ignored
-			}, {
-				Name: "status-name",
-				State: corev1.ContainerState{
-					Waiting: &corev1.ContainerStateWaiting{
-						Message: "i'm pending",
-					},
-				},
-			}},
-		},
-		want: v1alpha1.BuildStatus{
-			StepStates: []corev1.ContainerState{{
-				Waiting: &corev1.ContainerStateWaiting{
-					Message: "i'm pending",
-				},
-			}},
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionUnknown,
-				Reason:  "Pending",
-				Message: `build step "status-name" is pending with reason "i'm pending"`,
-			}},
-		},
-	}, {
-		desc: "pending-pod-condition",
-		podStatus: corev1.PodStatus{
-			Phase: corev1.PodPending,
-			Conditions: []corev1.PodCondition{{
-				Status:  corev1.ConditionUnknown,
-				Type:    "the type",
-				Message: "the message",
-			}},
-		},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionUnknown,
-				Reason:  "Pending",
-				Message: `pod status "the type":"Unknown"; message: "the message"`,
-			}},
-		},
-	}, {
-		desc: "pending-message",
-		podStatus: corev1.PodStatus{
-			Phase:   corev1.PodPending,
-			Message: "pod status message",
-		},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionUnknown,
-				Reason:  "Pending",
-				Message: "pod status message",
-			}},
-		},
-	}, {
-		desc:      "pending-no-message",
-		podStatus: corev1.PodStatus{Phase: corev1.PodPending},
-		want: v1alpha1.BuildStatus{
-			Conditions: []duckv1alpha1.Condition{{
-				Type:    v1alpha1.BuildSucceeded,
-				Status:  corev1.ConditionUnknown,
-				Reason:  "Pending",
-				Message: "Pending",
-			}},
-		},
-	}} {
-		t.Run(c.desc, func(t *testing.T) {
-			now := metav1.Now()
-			p := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              "pod",
-					Namespace:         system.Namespace,
-					CreationTimestamp: now,
-				},
-				Status: c.podStatus,
-			}
-			got := BuildStatusFromPod(p, c.buildSpec)
-
-			// Common traits, set for test case brevity.
-			c.want.Cluster = &v1alpha1.ClusterSpec{
-				PodName:   "pod",
-				Namespace: system.Namespace,
-			}
-			c.want.Builder = v1alpha1.ClusterBuildProvider
-			c.want.StartTime = &now
-
-			if d := cmp.Diff(got, c.want, ignoreVolatileTime); d != "" {
-				t.Errorf("Diff:\n%s", d)
 			}
 		})
 	}

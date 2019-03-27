@@ -22,7 +22,6 @@ import (
 	"reflect"
 	"time"
 
-	buildv1alpha1 "github.com/knative/build/pkg/apis/build/v1alpha1"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/tracker"
@@ -38,7 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -70,14 +68,6 @@ const (
 	taskRunControllerName = "TaskRun"
 )
 
-var (
-	groupVersionKind = schema.GroupVersionKind{
-		Group:   v1alpha1.SchemeGroupVersion.Group,
-		Version: v1alpha1.SchemeGroupVersion.Version,
-		Kind:    "TaskRun",
-	}
-)
-
 // Reconciler implements controller.Reconciler for Configuration resources.
 type Reconciler struct {
 	*reconciler.Base
@@ -89,6 +79,7 @@ type Reconciler struct {
 	resourceLister    listers.PipelineResourceLister
 	tracker           tracker.Interface
 	cache             *entrypoint.Cache
+	timeoutHandler    *reconciler.TimeoutSet
 }
 
 // Check that our Reconciler implements controller.Reconciler
@@ -103,6 +94,7 @@ func NewController(
 	resourceInformer informers.PipelineResourceInformer,
 	podInformer coreinformers.PodInformer,
 	entrypointCache *entrypoint.Cache,
+	timeoutHandler *reconciler.TimeoutSet,
 ) *controller.Impl {
 
 	c := &Reconciler{
@@ -111,6 +103,7 @@ func NewController(
 		taskLister:        taskInformer.Lister(),
 		clusterTaskLister: clusterTaskInformer.Lister(),
 		resourceLister:    resourceInformer.Lister(),
+		timeoutHandler:    timeoutHandler,
 	}
 	impl := controller.NewImpl(c, c.Logger, taskRunControllerName, reconciler.MustNewStatsReporter(taskRunControllerName, c.Logger))
 
@@ -122,8 +115,9 @@ func NewController(
 
 	c.tracker = tracker.New(impl.EnqueueKey, opt.GetTrackerLease())
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.tracker.OnChanged,
-		UpdateFunc: controller.PassNew(c.tracker.OnChanged),
+		AddFunc:    impl.EnqueueControllerOf,
+		UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
+		DeleteFunc: impl.EnqueueControllerOf,
 	})
 
 	c.Logger.Info("Setting up Entrypoint cache")
@@ -161,7 +155,8 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 	tr := original.DeepCopy()
 	tr.Status.InitializeConditions()
 
-	if isDone(&tr.Status) {
+	if tr.IsDone() {
+		c.timeoutHandler.Release(tr)
 		return nil
 	}
 
@@ -216,7 +211,7 @@ func (c *Reconciler) getTaskFunc(tr *v1alpha1.TaskRun) resources.GetTask {
 
 func (c *Reconciler) reconcile(ctx context.Context, tr *v1alpha1.TaskRun) error {
 	// If the taskrun is cancelled, kill resources and update status
-	if isCancelled(tr.Spec) {
+	if tr.IsCancelled() {
 		before := tr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
 		err := cancelTaskRun(tr, c.KubeClientSet, c.Logger)
 		after := tr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
@@ -288,8 +283,9 @@ func (c *Reconciler) reconcile(ctx context.Context, tr *v1alpha1.TaskRun) error 
 			return err
 		}
 	} else {
-		// Build pod is not present, create build pod.
-		pod, err = c.createBuildPod(tr, rtr.TaskSpec, rtr.TaskName)
+		// Pod is not present, create pod.
+		go c.timeoutHandler.WaitTaskRun(tr)
+		pod, err = c.createPod(tr, rtr.TaskSpec, rtr.TaskName)
 		if err != nil {
 			// This Run has failed, so we need to mark it as failed and stop reconciling it
 			var msg string
@@ -308,6 +304,7 @@ func (c *Reconciler) reconcile(ctx context.Context, tr *v1alpha1.TaskRun) error 
 			c.Logger.Errorf("Failed to create build pod for task %q :%v", err, tr.Name)
 			return nil
 		}
+		go c.timeoutHandler.WaitTaskRun(tr)
 	}
 	if err := c.tracker.Track(tr.GetBuildPodRef(), tr); err != nil {
 		c.Logger.Errorf("Failed to create tracker for build pod %q for taskrun %q: %v", tr.Name, tr.Name, err)
@@ -316,10 +313,9 @@ func (c *Reconciler) reconcile(ctx context.Context, tr *v1alpha1.TaskRun) error 
 
 	before := tr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
 
-	// Translate Pod -> BuildStatus
-	buildStatus := resources.BuildStatusFromPod(pod, buildv1alpha1.BuildSpec{})
-	// Translate BuildStatus -> TaskRunStatus
-	updateStatusFromBuildStatus(tr, buildStatus)
+	c.timeoutHandler.StatusLock(tr)
+	updateStatusFromPod(tr, pod)
+	c.timeoutHandler.StatusUnlock(tr)
 
 	after := tr.Status.GetCondition(duckv1alpha1.ConditionSucceeded)
 
@@ -330,11 +326,9 @@ func (c *Reconciler) reconcile(ctx context.Context, tr *v1alpha1.TaskRun) error 
 	return nil
 }
 
-func updateStatusFromBuildStatus(taskRun *v1alpha1.TaskRun, buildStatus buildv1alpha1.BuildStatus) {
-	if buildStatus.GetCondition(duckv1alpha1.ConditionSucceeded) != nil {
-		taskRun.Status.SetCondition(buildStatus.GetCondition(duckv1alpha1.ConditionSucceeded))
-	} else {
-		// If the buildStatus doesn't exist yet, it's because we just started running
+func updateStatusFromPod(taskRun *v1alpha1.TaskRun, pod *corev1.Pod) {
+	if taskRun.Status.GetCondition(duckv1alpha1.ConditionSucceeded) == nil || taskRun.Status.GetCondition(duckv1alpha1.ConditionSucceeded).Status == corev1.ConditionUnknown {
+		// If the taskRunStatus doesn't exist yet, it's because we just started running
 		taskRun.Status.SetCondition(&duckv1alpha1.Condition{
 			Type:    duckv1alpha1.ConditionSucceeded,
 			Status:  corev1.ConditionUnknown,
@@ -342,19 +336,90 @@ func updateStatusFromBuildStatus(taskRun *v1alpha1.TaskRun, buildStatus buildv1a
 			Message: reasonRunning,
 		})
 	}
-	taskRun.Status.StartTime = buildStatus.StartTime
-	if buildStatus.Cluster != nil {
-		taskRun.Status.PodName = buildStatus.Cluster.PodName
-	}
-	taskRun.Status.CompletionTime = buildStatus.CompletionTime
+
+	taskRun.Status.StartTime = &pod.CreationTimestamp
+	taskRun.Status.PodName = pod.Name
 
 	taskRun.Status.Steps = []v1alpha1.StepState{}
-	for i := 0; i < len(buildStatus.StepStates); i++ {
-		state := buildStatus.StepStates[i]
+	for _, s := range pod.Status.ContainerStatuses {
 		taskRun.Status.Steps = append(taskRun.Status.Steps, v1alpha1.StepState{
-			ContainerState: *state.DeepCopy(),
+			ContainerState: *s.State.DeepCopy(),
 		})
 	}
+
+	switch pod.Status.Phase {
+	case corev1.PodRunning:
+		taskRun.Status.SetCondition(&duckv1alpha1.Condition{
+			Type:   duckv1alpha1.ConditionSucceeded,
+			Status: corev1.ConditionUnknown,
+			Reason: "Building",
+		})
+	case corev1.PodFailed:
+		msg := getFailureMessage(pod)
+		taskRun.Status.SetCondition(&duckv1alpha1.Condition{
+			Type:    duckv1alpha1.ConditionSucceeded,
+			Status:  corev1.ConditionFalse,
+			Message: msg,
+		})
+	case corev1.PodPending:
+		msg := getWaitingMessage(pod)
+		taskRun.Status.SetCondition(&duckv1alpha1.Condition{
+			Type:    duckv1alpha1.ConditionSucceeded,
+			Status:  corev1.ConditionUnknown,
+			Reason:  "Pending",
+			Message: msg,
+		})
+	case corev1.PodSucceeded:
+		taskRun.Status.SetCondition(&duckv1alpha1.Condition{
+			Type:   duckv1alpha1.ConditionSucceeded,
+			Status: corev1.ConditionTrue,
+		})
+	}
+}
+
+func getWaitingMessage(pod *corev1.Pod) string {
+	// First, try to surface reason for pending/unknown about the actual build step.
+	for _, status := range pod.Status.ContainerStatuses {
+		wait := status.State.Waiting
+		if wait != nil && wait.Message != "" {
+			return fmt.Sprintf("build step %q is pending with reason %q",
+				status.Name, wait.Message)
+		}
+	}
+	// Try to surface underlying reason by inspecting pod's recent status if condition is not true
+	for i, podStatus := range pod.Status.Conditions {
+		if podStatus.Status != corev1.ConditionTrue {
+			return fmt.Sprintf("pod status %q:%q; message: %q",
+				pod.Status.Conditions[i].Type,
+				pod.Status.Conditions[i].Status,
+				pod.Status.Conditions[i].Message)
+		}
+	}
+	// Next, return the Pod's status message if it has one.
+	if pod.Status.Message != "" {
+		return pod.Status.Message
+	}
+
+	// Lastly fall back on a generic pending message.
+	return "Pending"
+}
+
+func getFailureMessage(pod *corev1.Pod) string {
+	// First, try to surface an error about the actual build step that failed.
+	for _, status := range pod.Status.ContainerStatuses {
+		term := status.State.Terminated
+		if term != nil && term.ExitCode != 0 {
+			return fmt.Sprintf("build step %q exited with code %d (image: %q); for logs run: kubectl -n %s logs %s -c %s",
+				status.Name, term.ExitCode, status.ImageID,
+				pod.Namespace, pod.Name, status.Name)
+		}
+	}
+	// Next, return the Pod's status message if it has one.
+	if pod.Status.Message != "" {
+		return pod.Status.Message
+	}
+	// Lastly fall back on a generic error message.
+	return "build failed for unspecified reasons."
 }
 
 func (c *Reconciler) updateStatus(taskrun *v1alpha1.TaskRun) (*v1alpha1.TaskRun, error) {
@@ -383,46 +448,23 @@ func (c *Reconciler) updateLabels(tr *v1alpha1.TaskRun) (*v1alpha1.TaskRun, erro
 
 // createPod creates a Pod based on the Task's configuration, with pvcName as a
 // volumeMount
-func (c *Reconciler) createBuildPod(tr *v1alpha1.TaskRun, ts *v1alpha1.TaskSpec, taskName string) (*corev1.Pod, error) {
-	// TODO: Preferably use Validate on task.spec to catch validation error
-	bs := ts.GetBuildSpec()
-	if bs == nil {
-		return nil, fmt.Errorf("task %s has nil BuildSpec", taskName)
-	}
-
-	bSpec := bs.DeepCopy()
-	bSpec.Timeout = tr.Spec.Timeout
-	bSpec.Affinity = tr.Spec.Affinity
-	bSpec.NodeSelector = tr.Spec.NodeSelector
-
-	build := &buildv1alpha1.Build{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      tr.Name,
-			Namespace: tr.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(tr, groupVersionKind),
-			},
-			// Attach new label and pass taskrun labels to build
-			Labels: makeLabels(tr),
-		},
-		Spec: *bSpec,
-	}
-
-	build, err := resources.AddInputResource(c.KubeClientSet, build, taskName, ts, tr, c.resourceLister, c.Logger)
+func (c *Reconciler) createPod(tr *v1alpha1.TaskRun, ts *v1alpha1.TaskSpec, taskName string) (*corev1.Pod, error) {
+	ts = ts.DeepCopy()
+	ts, err := resources.AddInputResource(c.KubeClientSet, taskName, ts, tr, c.resourceLister, c.Logger)
 	if err != nil {
 		c.Logger.Errorf("Failed to create a build for taskrun: %s due to input resource error %v", tr.Name, err)
 		return nil, err
 	}
 
-	err = resources.AddOutputResources(c.KubeClientSet, build, taskName, ts, tr, c.resourceLister, c.Logger)
+	err = resources.AddOutputResources(c.KubeClientSet, taskName, ts, tr, c.resourceLister, c.Logger)
 	if err != nil {
 		c.Logger.Errorf("Failed to create a build for taskrun: %s due to output resource error %v", tr.Name, err)
 		return nil, err
 	}
 
-	build, err = createRedirectedBuild(c.KubeClientSet, build, tr, c.cache, c.Logger)
+	ts, err = createRedirectedTaskSpec(c.KubeClientSet, ts, tr, c.cache, c.Logger)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't create redirected Build: %v", err)
+		return nil, fmt.Errorf("couldn't create redirected TaskSpec: %v", err)
 	}
 
 	var defaults []v1alpha1.TaskParam
@@ -430,19 +472,19 @@ func (c *Reconciler) createBuildPod(tr *v1alpha1.TaskRun, ts *v1alpha1.TaskSpec,
 		defaults = append(defaults, ts.Inputs.Params...)
 	}
 	// Apply parameter templating from the taskrun.
-	build = resources.ApplyParameters(build, tr, defaults...)
+	ts = resources.ApplyParameters(ts, tr, defaults...)
 
 	// Apply bound resource templating from the taskrun.
-	build, err = resources.ApplyResources(build, tr.Spec.Inputs.Resources, c.resourceLister.PipelineResources(tr.Namespace).Get, "inputs")
+	ts, err = resources.ApplyResources(ts, tr.Spec.Inputs.Resources, c.resourceLister.PipelineResources(tr.Namespace).Get, "inputs")
 	if err != nil {
 		return nil, fmt.Errorf("couldnt apply input resource templating: %s", err)
 	}
-	build, err = resources.ApplyResources(build, tr.Spec.Outputs.Resources, c.resourceLister.PipelineResources(tr.Namespace).Get, "outputs")
+	ts, err = resources.ApplyResources(ts, tr.Spec.Outputs.Resources, c.resourceLister.PipelineResources(tr.Namespace).Get, "outputs")
 	if err != nil {
 		return nil, fmt.Errorf("couldnt apply output resource templating: %s", err)
 	}
 
-	pod, err := resources.MakePod(build, c.KubeClientSet)
+	pod, err := resources.MakePod(tr, *ts, c.KubeClientSet)
 	if err != nil {
 		return nil, fmt.Errorf("translating Build to Pod: %v", err)
 	}
@@ -450,40 +492,24 @@ func (c *Reconciler) createBuildPod(tr *v1alpha1.TaskRun, ts *v1alpha1.TaskSpec,
 	return c.KubeClientSet.CoreV1().Pods(tr.Namespace).Create(pod)
 }
 
-// CreateRedirectedBuild takes a build, a persistent volume claim name, a taskrun and
+// CreateRedirectedTaskSpec takes a TaskSpec, a persistent volume claim name, a taskrun and
 // an entrypoint cache creates a build where all entrypoints are switched to
 // be the entrypoint redirector binary. This function assumes that it receives
-// its own copy of the BuildSpec and modifies it freely
-func createRedirectedBuild(kubeclient kubernetes.Interface, build *buildv1alpha1.Build, tr *v1alpha1.TaskRun, cache *entrypoint.Cache, logger *zap.SugaredLogger) (*buildv1alpha1.Build, error) {
-	bs := &build.Spec
-	// Pass service account name from taskrun to build
-	bs.ServiceAccountName = tr.Spec.ServiceAccount
-
+// its own copy of the TaskSpec and modifies it freely
+func createRedirectedTaskSpec(kubeclient kubernetes.Interface, ts *v1alpha1.TaskSpec, tr *v1alpha1.TaskRun, cache *entrypoint.Cache, logger *zap.SugaredLogger) (*v1alpha1.TaskSpec, error) {
 	// RedirectSteps the entrypoint in each container so that we can use our custom
 	// entrypoint which copies logs to the volume
-	err := entrypoint.RedirectSteps(cache, bs.Steps, kubeclient, build, logger)
+	err := entrypoint.RedirectSteps(cache, ts.Steps, kubeclient, tr, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add entrypoint to steps of TaskRun %s: %v", tr.Name, err)
 	}
 	// Add the step which will copy the entrypoint into the volume
 	// we are going to be using, so that all of the steps will have
 	// access to it.
-	entrypoint.AddCopyStep(bs)
-	b := &buildv1alpha1.Build{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      tr.Name,
-			Namespace: tr.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(tr, groupVersionKind),
-			},
-			// Attach new label and pass taskrun labels to build
-			Labels: makeLabels(tr),
-		},
-		Spec: *bs,
-	}
+	entrypoint.AddCopyStep(ts)
 
 	// Add the volume used for storing the binary and logs
-	b.Spec.Volumes = append(b.Spec.Volumes, corev1.Volume{
+	ts.Volumes = append(ts.Volumes, corev1.Volume{
 		Name: entrypoint.MountName,
 		VolumeSource: corev1.VolumeSource{
 			// TODO(#107) we need to actually stream these logs somewhere, probably via sidecar.
@@ -491,23 +517,7 @@ func createRedirectedBuild(kubeclient kubernetes.Interface, build *buildv1alpha1
 			EmptyDir: &corev1.EmptyDirVolumeSource{},
 		},
 	})
-
-	return b, nil
-}
-
-// makeLabels constructs the labels we will propagate from TaskRuns to Pods.
-func makeLabels(s *v1alpha1.TaskRun) map[string]string {
-	labels := make(map[string]string, len(s.ObjectMeta.Labels)+1)
-	for k, v := range s.ObjectMeta.Labels {
-		labels[k] = v
-	}
-	labels[pipeline.GroupName+pipeline.TaskRunLabelKey] = s.Name
-	return labels
-}
-
-// isDone returns true if the TaskRun's status indicates that it is done.
-func isDone(status *v1alpha1.TaskRunStatus) bool {
-	return !status.GetCondition(duckv1alpha1.ConditionSucceeded).IsUnknown()
+	return ts, nil
 }
 
 type DeletePod func(podName string, options *metav1.DeleteOptions) error

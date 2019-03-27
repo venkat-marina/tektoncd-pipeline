@@ -1,6 +1,6 @@
 plank:
   job_url_template: 'https://tekton-releases.appspot.com/build/tekton-prow/{{if or (eq .Spec.Type "presubmit") (eq .Spec.Type "batch")}}pr-logs/pull{{with .Spec.Refs}}/{{.Org}}_{{.Repo}}{{end}}{{else}}logs{{end}}{{if eq .Spec.Type "presubmit"}}/{{with index .Spec.Refs.Pulls 0}}{{.Number}}{{end}}{{else if eq .Spec.Type "batch"}}/batch{{end}}/{{.Spec.Job}}/{{.Status.BuildID}}/'
-  report_template: '[Full PR test history](https://tekton-releases.appspot.com/pr/{{.Spec.Refs.Org}}_{{.Spec.Refs.Repo}}/{{with index .Spec.Refs.Pulls 0}}{{.Number}}{{end}}). [Your PR dashboard](http://34.95.121.238/pr/{{with index .Spec.Refs.Pulls 0}}{{.Author}}{{end}}).'
+  report_template: '[Full PR test history](https://tekton-releases.appspot.com/pr/{{.Spec.Refs.Org}}_{{.Spec.Refs.Repo}}/{{with index .Spec.Refs.Pulls 0}}{{.Number}}{{end}}). [Your PR dashboard](https://prow.tekton.dev/pr/{{with index .Spec.Refs.Pulls 0}}{{.Author}}{{end}}).'
   pod_pending_timeout: 60m
   default_decoration_config:
     timeout: 7200000000000 # 2h
@@ -17,10 +17,10 @@ plank:
 branch-protection:
   orgs:
     tektoncd:
-      # Protect all branches in knative
+      # Protect all branches in tekton
       # This means all prow jobs with "always_run" set are required
       # to pass before tide can merge the PR.
-      # Currently this is manually enabled by the knative org admins,
+      # Currently this is manually enabled by the tekton org admins,
       # but it's stated here for documentation and reference purposes.
       protect: true
       # Admins can overrule checks
@@ -35,9 +35,17 @@ tide:
     missingLabels:
     - do-not-merge/hold
     - do-not-merge/work-in-progress
+  - repos:
+    - tektoncd/community
+    labels:
+    - lgtm
+    - approved
+    missingLabels:
+    - do-not-merge/hold
+    - do-not-merge/work-in-progress
   merge_method:
     tektoncd/pipeline: rebase
-  target_url: http://34.95.121.238/tide
+  target_url: https://prow.tekton.dev/tide
 
 presubmits:
   tektoncd/pipeline:
@@ -49,7 +57,7 @@ presubmits:
     trigger: "(?m)^/test (all|pull-tekton-pipeline-build-tests),?(\\s+|$)"
     spec:
       containers:
-      - image: gcr.io/knative-tests/test-infra/prow-tests:stable
+      - image: gcr.io/knative-tests/test-infra/prow-tests@sha256:39296f6df4f29812689b41c47c78bdb00fbbec5ee63407fcbfefec0f48f5b6b1
         imagePullPolicy: Always
         args:
         - "--scenario=kubernetes_execute_bazel"
@@ -71,7 +79,7 @@ presubmits:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /etc/test-account/service-account.json
         - name: E2E_CLUSTER_REGION
-          value: us-west1
+          value: us-central1
       volumes:
       - name: test-account
         secret:
@@ -84,7 +92,7 @@ presubmits:
     trigger: "(?m)^/test (all|tekton-pipeline-unit-tests),?(\\s+|$)"
     spec:
       containers:
-      - image: gcr.io/knative-tests/test-infra/prow-tests:stable
+      - image: gcr.io/knative-tests/test-infra/prow-tests@sha256:39296f6df4f29812689b41c47c78bdb00fbbec5ee63407fcbfefec0f48f5b6b1
         imagePullPolicy: Always
         args:
         - "--scenario=kubernetes_execute_bazel"
@@ -106,7 +114,7 @@ presubmits:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /etc/test-account/service-account.json
         - name: E2E_CLUSTER_REGION
-          value: us-west1
+          value: us-central1
       volumes:
       - name: test-account
         secret:
@@ -119,7 +127,7 @@ presubmits:
     trigger: "(?m)^/test (all|pull-tekton-pipeline-integration-tests),?(\\s+|$)"
     spec:
       containers:
-      - image: gcr.io/knative-tests/test-infra/prow-tests:stable
+      - image: gcr.io/knative-tests/test-infra/prow-tests@sha256:39296f6df4f29812689b41c47c78bdb00fbbec5ee63407fcbfefec0f48f5b6b1
         imagePullPolicy: Always
         args:
         - "--scenario=kubernetes_execute_bazel"
@@ -141,8 +149,39 @@ presubmits:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /etc/test-account/service-account.json
         - name: E2E_CLUSTER_REGION
-          value: us-west1
+          value: us-central1
       volumes:
       - name: test-account
         secret:
           secretName: test-account
+  - name: pull-tekton-pipeline-go-coverage
+    agent: kubernetes
+    context: pull-tekton-pipeline-go-coverage
+    always_run: true
+    rerun_command: "/test pull-tekton-pipeline-go-coverage"
+    trigger: "(?m)^/test (all|pull-tekton-pipeline-go-coverage),?(\\s+|$)"
+    optional: true
+    decorate: true
+    clone_uri: "https://github.com/tektoncd/pipeline.git"
+    spec:
+      containers:
+      - image: gcr.io/knative-tests/test-infra/coverage:latest
+        imagePullPolicy: Always
+        command:
+        - "/coverage"
+        args:
+        - "--postsubmit-gcs-bucket=tekton-prow"
+        - "--postsubmit-job-name=pull-tekton-pipeline-go-coverage"
+        - "--artifacts=$(ARTIFACTS)"
+        - "--profile-name=coverage_profile.txt"
+        - "--cov-target=."
+        - "--cov-threshold-percentage=80"
+        - "--github-token=/etc/github-token/oauth"
+        volumeMounts:
+        - name: github-token
+          mountPath: /etc/github-token
+          readOnly: true
+      volumes:
+      - name: github-token
+        secret:
+          secretName: oauth-token
