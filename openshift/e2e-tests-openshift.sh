@@ -10,7 +10,7 @@ readonly TEST_NAMESPACE=tekton-pipeline-tests
 readonly TEST_YAML_NAMESPACE=tekton-pipeline-tests-yaml
 readonly TEKTON_PIPELINE_NAMESPACE=tekton-pipelines
 readonly IGNORES="pipelinerun.yaml|private-taskrun.yaml|taskrun.yaml|gcs-resource-spec-taskrun.yaml"
-readonly KO_DOCKER_REPO=image-registry.openshift-image-registry.svc:5000/tektoncd-pipeline
+# readonly KO_DOCKER_REPO=image-registry.openshift-image-registry.svc:5000/tektoncd-pipeline
 
 env
 
