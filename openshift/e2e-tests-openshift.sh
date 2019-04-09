@@ -10,7 +10,7 @@ readonly TEST_NAMESPACE=tekton-pipeline-tests
 readonly TEST_YAML_NAMESPACE=tekton-pipeline-tests-yaml
 readonly TEKTON_PIPELINE_NAMESPACE=tekton-pipelines
 readonly IGNORES="pipelinerun.yaml|private-taskrun.yaml|taskrun.yaml|gcs-resource-spec-taskrun.yaml"
-readonly KO_DOCKER_REPO=image-registry.openshift-image-registry.svc:5000/tektoncd-pipeline
+# readonly KO_DOCKER_REPO=image-registry.openshift-image-registry.svc:5000/tektoncd-pipeline
 
 env
 
@@ -64,7 +64,7 @@ function create_test_namespace(){
 
 function run_go_e2e_tests(){
   header "Running Go e2e tests"
-  go_test_e2e ./test -timeout=20m --kubeconfig $KUBECONFIG || return 1
+  go test -tags=e2e -count=1 -ldflags "-X github.com/tektoncd/pipeline/test.missingKoFatal=false" ./test -timeout=20m --kubeconfig $KUBECONFIG || return 1
 }
 
 function run_yaml_e2e_tests() {
