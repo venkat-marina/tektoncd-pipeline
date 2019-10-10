@@ -809,7 +809,7 @@ spec:
           "-entrypoint-image", "quay.io/openshift-pipeline/tektoncd-pipeline-entrypoint:v0.7.0",
           "-imagedigest-exporter-image", "quay.io/openshift-pipeline/tektoncd-pipeline-imagedigestexporter:v0.7.0",
           "-pr-image", "quay.io/openshift-pipeline/tektoncd-pipeline-pullrequest-init:v0.7.0",
-          "-build-gcs-fetcher-image", "github.com/tektoncd/pipeline/vendor/github.com/GoogleCloudPlatform/cloud-builders/gcs-fetcher/cmd/gcs-fetcher",
+          "-build-gcs-fetcher-image", "quay.io/openshift-pipeline/tektoncd-pipeline-gcs-fetcher:v0.7.0",
         ]
         volumeMounts:
         - name: config-logging
