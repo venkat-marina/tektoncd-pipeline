@@ -18,7 +18,7 @@ function resolve_resources() {
   # CORE_IMAGES_WITH_GIT=./cmd/creds-init ./cmd/git-init
   # to:
   #  % grep '^CORE_IMAGES' Makefile|sed -e 's/.*=//' -e 's,./cmd/,,g'|tr -d '\n'|sed -e 's/ /|/g' -e 's/^/(/' -e 's/$/)\n/'
-  # (controller|entrypoint|gsutil|kubeconfigwriter|nop|webhook|imagedigestexportercreds-init|git-init)
+  # (controller|entrypoint|kubeconfigwriter|nop|webhook|imagedigestexportercreds-init|git-init)
   local image_regexp=$(grep '^CORE_IMAGES' $(git rev-parse --show-toplevel)/Makefile| \
                            sed -e 's/.*=//' -e 's,./cmd/,,g'|tr '\n' ' '| \
                            sed -e 's/ /|/g' -e 's/^/(/' -e 's/|$/)\n/')
@@ -36,7 +36,6 @@ function resolve_resources() {
         # busybox => registry.access.redhat.com/ubi8/ubi-minimal:latest \
         sed -e "s%tianon/true%${registry_prefix}-nop:${image_tag}%" \
             -e "s%busybox%registry.access.redhat.com/ubi8/ubi-minimal:latest%" \
-            -e "s%google/cloud-sdk%${registry_prefix}-gsutil:${image_tag}%" \
             -e "s%\(.* image:\)\(github.com\)\(.*\/\)\(.*\)%\1 ${registry_prefix}-\4:${image_tag}%" $yaml \
             -r -e "s,github.com/tektoncd/pipeline/cmd/${image_regexp},${registry_prefix}-\1:${image_tag},g" \
             > ${TMP}
@@ -53,7 +52,6 @@ function resolve_resources() {
         # busybox => registry.access.redhat.com/ubi8/ubi-minimal:latest \
          sed -e "s%tinaon/true%${registry_prefix}:tektoncd-pipeline-nop%" \
              -e "s%busybox%registry.access.redhat.com/ubi8/ubi-minimal:latest%" \
-             -e "s%google/cloud-sdk%${registry_prefix}:tektoncd-pipeline-gsutil%" \
              -e 's%\(.* image:\)\(github.com\)\(.*\/\)\(test\/\)\(.*\)%\1\2 \3\4test-\5%' $yaml \
              -e "s%\(.* image:\)\(github.com\)\(.*\/\)\(.*\)%\1 ""$registry_prefix"'\:tektoncd-pipeline-\4%'  \
              -re "s,github.com/tektoncd/pipeline/cmd/${image_regexp},${registry_prefix}:tektoncd-pipeline-\1,g" \
