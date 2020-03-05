@@ -1,7 +1,6 @@
 aliases:
   build-pipeline-approvers:
   - mgencur
-  - bbrowning
   - jcrossley3
   - markusthoemmes
   - vdemeester
@@ -11,7 +10,6 @@ aliases:
 
   build-pipeline-reviewers:
   - mgencur
-  - bbrowning
   - jcrossley3
   - markusthoemmes
   - vdemeester
