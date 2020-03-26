@@ -23,29 +23,29 @@
 
 * Go to your [catalog](https://github.com/openshift/tektoncd-catalog) repository and checkout openshift/master with :
 
-```bash
-git fetch -a openshift
-git checkout -B openshift-master openshift/master
-```
+  ```bash
+  git fetch -a openshift
+  git checkout -B openshift-master openshift/master
+  ```
 
 * Run the release command :
 
-```bash
-bash -ex ./openshift/release/create-release-branch.sh ${RELEASE}
-```
+  ```bash
+  bash -ex ./openshift/release/create-release-branch.sh ${RELEASE}
+  ```
 
 * Go to your local [pipelines catalog](https://github.com/openshift/pipelines-catalog) repository and checkout openshift/master with :
 
-```bash
-git fetch -a openshift
-git checkout -B openshift-master openshift/master
-```
+  ```bash
+  git fetch -a openshift
+  git checkout -B openshift-master openshift/master
+  ```
 
 * Run the release command :
 
-```bash
-bash -ex ./openshift/release/create-release-branch.sh ${RELEASE}
-```
+  ```bash
+  bash -ex ./openshift/release/create-release-branch.sh ${RELEASE}
+  ```
 
 
 This will do the push of the tag of the branch for catalog
@@ -53,25 +53,32 @@ This will do the push of the tag of the branch for catalog
 * Create a PR for the new release in the CI configuration repository <https://github.com/openshift/release>.
   [Look for an example here.](https://github.com/openshift/release/pull/3623). Wait that it gets merged. Make sure you have all the files in there which is one in `ci-operator/config` and two in `ci-operator/job`. Here is a handy script that would take care of almost everything (you need to double check that there is no `release-next` lingering in the files) :
 
-  Take all files for pipelines on release-next and create a release out of it with the right versioning in the file
+* Take all files for pipelines on release-next and create a release out of it with the right versioning in the file
   ```bash
   for i in $(find .|grep -E '.*tektoncd-pipeline-release-next.*');do RV=$(echo ${RELEASE}|sed 's/\./\\\\./g');sed -e "s/\^release-next/^release-v${RV}/" -e "s/release-next/release-v${RELEASE}/" -e "s/tektoncd-next/tektoncd-v${RELEASE}/" $i > $(echo $i| sed "s/release-next/release-v${RELEASE}/");done
   ```
 
-  Create a quay mirroring for pipeline
+* Create a quay mirroring for pipeline
   ```
   sed -e "s/nightly/v${RELEASE}/" -e "s/tektoncd-next/tektoncd-v${RELEASE}/g" core-services/image-mirroring/tekton/mapping_tekton_nightly_quay  > core-services/image-mirroring/tekton/mapping_tekton_v$(echo ${RELEASE}|sed 's/\.[0-9]*$/_quay/;s/\./_/g')
- ```
+  ```
 
-  Take all files for catalog on release-next and create a release out of it with the right versioning in the file
+* Take all files for catalog on release-next and create a release out of it with the right versioning in the file
+
   ```bash
   BASE_RELEASE=$(echo ${RELEASE}|sed 's/\.[0-9]*$//')
   for i in $(find .|grep -E '.*tektoncd-catalog-release-next.*');do RV=$(echo ${BASE_RELEASE}|sed 's/\./\\\\./g');sed -e "s/\^release-next/^release-v${RV}/" -e "s/release-next/release-v${BASE_RELEASE}/" -e "s/tektoncd-next/tektoncd-v${BASE_RELEASE}/" $i > $(echo $i| sed "s/release-next/release-v${BASE_RELEASE}/");done
   ```
 
-  Create a quay miroring for catalog
- ```
+* Create a quay miroring for catalog
+  ```bash
   sed -e "s/nightly/v${RELEASE}/" -e "s/tektoncd-next/tektoncd-v${RELEASE}/g" core-services/image-mirroring/tekton/mapping_tekton_catalog_nightly_quay  > core-services/image-mirroring/tekton/mapping_tekton_catalog_v$(echo ${RELEASE}|sed 's/\.[0-9]*$/_quay/;s/\./_/g')
+  ```
+
+* Run the make targets (jobs). This will generate the prow jobs from the new config files. It will also run `sanitize-prow-jobs`
+
+  ```bash
+  make jobs
   ```
 
 * Get someone to merge the PR before you go to the next step,
