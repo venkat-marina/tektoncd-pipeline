@@ -45,6 +45,14 @@ import (
 
 var initMetrics sync.Once
 
+var (
+	skipRootUserTests bool = false
+)
+
+func init() {
+	flag.BoolVar(&skipRootUserTests, "skipRootUserTests", false, "Skip tests that require root user")
+}
+
 func setup(t *testing.T, fn ...func(*testing.T, *clients, string)) (*clients, string) {
 	t.Helper()
 	namespace := names.SimpleNameGenerator.RestrictLengthWithRandomSuffix("arendelle")
@@ -146,6 +154,7 @@ func verifyServiceAccountExistence(t *testing.T, namespace string, kubeClient *k
 // TestMain initializes anything global needed by the tests. Right now this is just log and metric
 // setup since the log and metric libs we're using use global state :(
 func TestMain(m *testing.M) {
+	flag.Parse()
 	c := m.Run()
 	fmt.Fprintf(os.Stderr, "Using kubeconfig at `%s` with cluster `%s`\n", knativetest.Flags.Kubeconfig, knativetest.Flags.Cluster)
 	os.Exit(c)
