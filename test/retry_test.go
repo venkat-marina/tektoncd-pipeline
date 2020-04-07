@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1alpha1"
 	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,18 +41,18 @@ func TestTaskRunRetry(t *testing.T) {
 	// configured to retry 5 times.
 	pipelineRunName := "retry-pipeline"
 	numRetries := 5
-	if _, err := c.PipelineRunClient.Create(&v1alpha1.PipelineRun{
+	if _, err := c.PipelineRunClient.Create(&v1beta1.PipelineRun{
 		ObjectMeta: metav1.ObjectMeta{Name: pipelineRunName},
-		Spec: v1alpha1.PipelineRunSpec{
-			PipelineSpec: &v1alpha1.PipelineSpec{
-				Tasks: []v1alpha1.PipelineTask{{
+		Spec: v1beta1.PipelineRunSpec{
+			PipelineSpec: &v1beta1.PipelineSpec{
+				Tasks: []v1beta1.PipelineTask{{
 					Name: "retry-me",
-					TaskSpec: &v1alpha1.TaskSpec{TaskSpec: v1beta1.TaskSpec{
-						Steps: []v1alpha1.Step{{
+					TaskSpec: &v1beta1.TaskSpec{
+						Steps: []v1beta1.Step{{
 							Container: corev1.Container{Image: "busybox"},
 							Script:    "exit 1",
 						}},
-					}},
+					},
 					Retries: numRetries,
 				}},
 			},

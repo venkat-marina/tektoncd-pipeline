@@ -100,6 +100,12 @@ func TestPipeline_Validate(t *testing.T) {
 		},
 		failureExpected: true,
 	}, {
+		name: "pipeline spec missing",
+		p: &v1beta1.Pipeline{
+			ObjectMeta: metav1.ObjectMeta{Name: "pipeline"},
+		},
+		failureExpected: true,
+	}, {
 		name: "pipeline spec missing taskref and taskspec",
 		p: &v1beta1.Pipeline{
 			ObjectMeta: metav1.ObjectMeta{Name: "pipeline"},
@@ -344,6 +350,28 @@ func TestPipeline_Validate(t *testing.T) {
 					Resources: &v1beta1.PipelineTaskResources{
 						Inputs: []v1beta1.PipelineTaskInputResource{{
 							Name: "the-resource", Resource: "great-resource", From: []string{"bar"},
+						}},
+					},
+				}},
+			},
+		},
+		failureExpected: true,
+	}, {
+		name: "duplicate resource declaration",
+		p: &v1beta1.Pipeline{
+			ObjectMeta: metav1.ObjectMeta{Name: "pipeline"},
+			Spec: v1beta1.PipelineSpec{
+				Resources: []v1beta1.PipelineDeclaredResource{{
+					Name: "duplicate-resource", Type: v1beta1.PipelineResourceTypeGit,
+				}, {
+					Name: "duplicate-resource", Type: v1beta1.PipelineResourceTypeGit,
+				}},
+				Tasks: []v1beta1.PipelineTask{{
+					Name:    "foo",
+					TaskRef: &v1beta1.TaskRef{Name: "foo-task"},
+					Resources: &v1beta1.PipelineTaskResources{
+						Inputs: []v1beta1.PipelineTaskInputResource{{
+							Name: "the-resource", Resource: "duplicate-resource",
 						}},
 					},
 				}},

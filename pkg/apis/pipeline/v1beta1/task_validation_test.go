@@ -161,6 +161,15 @@ func TestTaskSpecValidate(t *testing.T) {
 			}}},
 		},
 	}, {
+		name: "valid creds-init path variable",
+		fields: fields{
+			Steps: []v1beta1.Step{{Container: corev1.Container{
+				Name:  "mystep",
+				Image: "echo",
+				Args:  []string{"$(credentials.path)"},
+			}}},
+		},
+	}, {
 		name: "step template included in validation",
 		fields: fields{
 			Steps: []v1beta1.Step{{Container: corev1.Container{
@@ -273,10 +282,10 @@ func TestTaskSpecValidateError(t *testing.T) {
 		fields        fields
 		expectedError apis.FieldError
 	}{{
-		name: "nil",
+		name: "empty spec",
 		expectedError: apis.FieldError{
 			Message: `missing field(s)`,
-			Paths:   []string{""},
+			Paths:   []string{"steps"},
 		},
 	}, {
 		name: "no step",

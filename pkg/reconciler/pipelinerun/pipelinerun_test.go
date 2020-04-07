@@ -32,9 +32,9 @@ import (
 	taskrunresources "github.com/tektoncd/pipeline/pkg/reconciler/taskrun/resources"
 	ttesting "github.com/tektoncd/pipeline/pkg/reconciler/testing"
 	"github.com/tektoncd/pipeline/pkg/system"
-	"github.com/tektoncd/pipeline/test"
 	tb "github.com/tektoncd/pipeline/test/builder"
 	"github.com/tektoncd/pipeline/test/names"
+	test "github.com/tektoncd/pipeline/test/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktesting "k8s.io/client-go/testing"
@@ -942,10 +942,7 @@ func TestReconcileWithTimeout(t *testing.T) {
 	actual := clients.Pipeline.Actions()[0].(ktesting.CreateAction).GetObject().(*v1alpha1.TaskRun)
 	if actual == nil {
 		t.Errorf("Expected a TaskRun to be created, but it wasn't.")
-	}
-
-	// The TaskRun timeout should be less than or equal to the PipelineRun timeout.
-	if actual.Spec.Timeout.Duration > prs[0].Spec.Timeout.Duration {
+	} else if actual.Spec.Timeout.Duration > prs[0].Spec.Timeout.Duration {
 		t.Errorf("TaskRun timeout %s should be less than or equal to PipelineRun timeout %s", actual.Spec.Timeout.Duration.String(), prs[0].Spec.Timeout.Duration.String())
 	}
 }

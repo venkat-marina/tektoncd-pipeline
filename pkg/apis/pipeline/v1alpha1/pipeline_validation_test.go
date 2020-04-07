@@ -50,6 +50,10 @@ func TestPipeline_Validate(t *testing.T) {
 		)),
 		failureExpected: true,
 	}, {
+		name:            "pipeline spec missing",
+		p:               tb.Pipeline("pipeline", "namespace"),
+		failureExpected: true,
+	}, {
 		name: "pipeline spec invalid (duplicate tasks)",
 		p: tb.Pipeline("pipeline", "namespace", tb.PipelineSpec(
 			tb.PipelineTask("foo", "foo-task"),
@@ -211,6 +215,15 @@ func TestPipeline_Validate(t *testing.T) {
 			tb.PipelineTask("baz", "baz-task"),
 			tb.PipelineTask("foo", "foo-task",
 				tb.PipelineTaskInputResource("the-resource", "great-resource", tb.From("bar"))),
+		)),
+		failureExpected: true,
+	}, {
+		name: "duplicate resource declaration",
+		p: tb.Pipeline("pipeline", "namespace", tb.PipelineSpec(
+			tb.PipelineDeclaredResource("duplicate-resource", v1alpha1.PipelineResourceTypeGit),
+			tb.PipelineDeclaredResource("duplicate-resource", v1alpha1.PipelineResourceTypeGit),
+			tb.PipelineTask("foo", "foo-task",
+				tb.PipelineTaskInputResource("the-resource", "duplicate-resource")),
 		)),
 		failureExpected: true,
 	}, {
