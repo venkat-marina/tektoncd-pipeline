@@ -21,7 +21,7 @@ git add openshift OWNERS_ALIASES OWNERS Makefile
 git commit -m ":open_file_folder: Update openshift specific files."
 
 if [[ -d openshift/patches ]];then
-    for f in openshift/patches/*.diff;do
+    for f in openshift/patches/*.patch;do
         [[ -f ${f} ]] || continue
         git am ${f}
     done
