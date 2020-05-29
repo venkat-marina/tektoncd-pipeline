@@ -60,7 +60,7 @@ function resolve_resources() {
 
     # Adding the labels: openshift.io/cluster-monitoring on Namespace to add the cluster-monitoring
     # See: https://docs.openshift.com/container-platform/4.1/logging/efk-logging-deploying.html
-    grep -q "kind: Namespace" ${TMP} && sed -i '/^metadata:/a \ \ labels:\n\ \ \ \ openshift.io/cluster-monitoring:\ \"true\"' ${TMP}
+    grep -qzP "kind: Namespace\nmetadata:\n\ \ name:\ tekton-pipelines" ${TMP} && sed -i '/^\ \ labels:/a \ \ \ \ openshift.io/cluster-monitoring:\ \"true\"' ${TMP}
 
     cat ${TMP} >> $resolved_file_name
 
