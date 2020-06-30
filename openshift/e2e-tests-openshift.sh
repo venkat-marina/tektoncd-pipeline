@@ -186,6 +186,26 @@ function teardown() {
   delete_build_pipeline_openshift
 }
 
+# usage:
+#    create a breakpoint by adding
+#    ```
+#    breakPoint <breakPointName>
+#    ```
+#
+#    to resume (run in pod `e2e`, container `test`)
+#    ```
+#    touch <breakPointName>
+#    ```
+function breakPoint() {
+  waitFileName=${1:-waitFile}
+  while [[ ! -f ${waitFileName} ]]; do
+    sleep 10;
+    echo \*\* --------------------------------------- \*\*
+    echo \*\* breakPoint                              \*\*;
+    echo \*\* run \`touch ${waitFileName}\` to resume \*\*
+  done
+}
+
 create_test_namespace
 
 ## If we want to debug the E2E script we don't want to use the images from the
