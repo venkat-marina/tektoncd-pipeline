@@ -56,7 +56,7 @@ metadata:
 spec:
   endpoints:
   - interval: 10s
-    port: metrics
+    port: http-metrics
   jobLabel: app
   namespaceSelector:
     matchNames:
